@@ -7,8 +7,12 @@ mod domain;
 // Подключаем модуль с функциями парсинга (`parse_jobs`, `dedup` и т.д.)
 mod parser;
 
-use crate::domain::{Job, JobFilter, ScraperConfig};
+// Модуль с trait-архитектурой и планировщиком.
+mod scheduler;
+
+use crate::domain::{Filter, Job, JobFilter, ScraperConfig};
 use crate::parser::{dedup, parse_jobs};
+use crate::scheduler::{HhScraper, InMemoryStorage, Scheduler, TelegramNotifier};
 
 fn main() {
     // Имитируем HTML‑страницу с вакансиями как строковый литерал.
@@ -52,6 +56,9 @@ fn main() {
     // `iter()` даёт `&Job`, `filter.matches(job)` получает `&Job`, сами `Job` остаются во владении `Vec`.
     let filtered: Vec<&Job> = jobs
         .iter()
+        // `Filter` — это trait, реализованный для `JobFilter`.
+        // Благодаря этому `scheduler` и другой код могут работать
+        // через обобщённый интерфейс, а не через конкретный тип.
         .filter(|job| filter.matches(job))
         .collect();
 
@@ -69,5 +76,20 @@ fn main() {
     for job in &jobs {
         println!("Unique job: {} at {}", job.title, job.company);
     }
+
+    // --- Демонстрация trait-архитектуры с dyn Scraper / Notifier / Storage ---
+
+    // Создаём dyn-объекты scrapers / notifiers / storage.
+    // Типы (`HhScraper`, `TelegramNotifier`, `InMemoryStorage`) спрятаны за trait'ами —
+    // scheduler видит только `dyn Scraper`, `dyn Notifier`, `dyn Storage`, `dyn Filter`.
+    let scrapers: Vec<Box<dyn scheduler::Scraper>> = vec![Box::new(HhScraper)];
+    let notifiers: Vec<Box<dyn scheduler::Notifier>> = vec![Box::new(TelegramNotifier)];
+    let storage: Box<dyn scheduler::Storage> = Box::new(InMemoryStorage::new());
+
+    // Для scheduler'а фильтр тоже выступает как `dyn Filter`.
+    let filter_box: Box<dyn Filter> = Box::new(filter.clone());
+
+    let mut scheduler = Scheduler::new(scrapers, notifiers, storage, filter_box);
+    scheduler.run();
 }
 
