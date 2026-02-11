@@ -12,9 +12,18 @@ mod scheduler;
 
 use crate::domain::{Filter, Job, JobFilter, ScraperConfig};
 use crate::parser::{dedup, parse_jobs};
-use crate::scheduler::{HhScraper, InMemoryStorage, Scheduler, TelegramNotifier};
+use crate::scheduler::{
+    AsyncHhScraper, AsyncScheduler, HhScraper, InMemoryStorage, Scheduler, TelegramNotifier,
+};
 
-fn main() {
+/// Точка входа в программу.
+///
+/// Атрибут `#[tokio::main]` поднимает runtime Tokio:
+///  - создаётся event loop;
+///  - подготавливается thread pool;
+///  - запускается `main` как асинхронная задача.
+#[tokio::main]
+async fn main() {
     // Имитируем HTML‑страницу с вакансиями как строковый литерал.
     // Тип: `&'static str` — ссылка на строку, зашитую в бинарник, без аллокаций в куче.
     let html: &str = r#"
@@ -91,5 +100,30 @@ fn main() {
 
     let mut scheduler = Scheduler::new(scrapers, notifiers, storage, filter_box);
     scheduler.run();
+
+    // --- Асинхронный цикл scraping через Tokio и join_all ---
+
+    // Набор URL (в реальности пришли бы из конфига).
+    let urls = vec![
+        "https://hh.ru/search/vacancy?text=rust".to_string(),
+        "https://hh.ru/search/vacancy?text=backend".to_string(),
+    ];
+
+    // Async-скрейпер и async-scheduler работают через те же trait'ы Filter/Notifier/Storage,
+    // но сами операции scraping выполняются конкурентно внутри Tokio.
+    let async_scrapers: Vec<Box<dyn scheduler::AsyncScraper>> = vec![Box::new(AsyncHhScraper)];
+    let async_notifiers: Vec<Box<dyn scheduler::Notifier + Send + Sync>> =
+        vec![Box::new(TelegramNotifier)];
+    let async_storage: Box<dyn scheduler::Storage + Send + Sync> = Box::new(InMemoryStorage::new());
+    let async_filter: Box<dyn Filter + Send + Sync> = Box::new(filter);
+
+    let mut async_scheduler =
+        AsyncScheduler::new(async_scrapers, async_notifiers, async_storage, async_filter);
+
+    // Здесь мы реально "входим" в async‑мир:
+    //  - для каждого URL создаётся асинхронная задача scraping;
+    //  - Tokio не блокирует поток, пока ожидает сетевые ответы;
+    //  - все URL обрабатываются параллельно, а не по очереди.
+    async_scheduler.run_async(&urls).await;
 }
 

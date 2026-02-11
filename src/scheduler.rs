@@ -12,6 +12,10 @@
 use crate::domain::{Filter, Job};
 use crate::parser::parse_jobs;
 
+use futures::future::{join_all, BoxFuture};
+use std::time::Duration;
+use tokio::time::{sleep, timeout};
+
 /// Trait-обёртка над любым источником вакансий.
 ///
 /// Примеры реализаций:
@@ -28,6 +32,35 @@ pub trait Scraper {
     /// В реальном проекте метод был бы `async` и выполнял HTTP-запросы.
     /// Здесь он синхронный для простоты и наглядности trait-объектов.
     fn fetch_jobs(&self) -> Vec<Job>;
+}
+
+/// Ошибка при асинхронном scraping.
+///
+/// В реальном проекте здесь было бы что‑то вроде enum'а с вариантами
+/// `Network`, `Timeout`, `Parse` и т.д. Для иллюстрации достаточно строки.
+#[allow(dead_code)] // заглушка: пока используем только Debug-представление ошибки
+#[derive(Debug)]
+pub struct ScrapeError {
+    pub message: String,
+}
+
+#[allow(dead_code)] // заглушка: конструктор пока не используется напрямую
+impl ScrapeError {
+    pub fn new(msg: impl Into<String>) -> Self {
+        Self { message: msg.into() }
+    }
+}
+
+/// Асинхронный интерфейс для скрейперов.
+///
+/// Важный момент: чтобы trait был совместим с `dyn` (динамическими объектами),
+/// мы НЕ используем `async fn` напрямую. Вместо этого метод возвращает
+/// зафиксированный тип future (`BoxFuture<...>`), который можно положить в vtable.
+pub trait AsyncScraper: Send + Sync {
+    /// Асинхронный сбор вакансий по конкретному URL.
+    ///
+    /// Метод возвращает "запакованную" future, которую можно `.await` снаружи.
+    fn scrape(&self, url: &str) -> BoxFuture<'static, Result<Vec<Job>, ScrapeError>>;
 }
 
 /// Trait канала уведомлений.
@@ -129,6 +162,98 @@ impl Scheduler {
     }
 }
 
+/// Асинхронная версия scheduler'а.
+///
+/// Структура почти та же, но использует `AsyncScraper` и асинхронный метод `run_async`.
+pub struct AsyncScheduler {
+    pub scrapers: Vec<Box<dyn AsyncScraper>>,
+    pub notifiers: Vec<Box<dyn Notifier + Send + Sync>>,
+    pub storage: Box<dyn Storage + Send + Sync>,
+    pub filter: Box<dyn Filter + Send + Sync>,
+}
+
+impl AsyncScheduler {
+    pub fn new(
+        scrapers: Vec<Box<dyn AsyncScraper>>,
+        notifiers: Vec<Box<dyn Notifier + Send + Sync>>,
+        storage: Box<dyn Storage + Send + Sync>,
+        filter: Box<dyn Filter + Send + Sync>,
+    ) -> Self {
+        Self {
+            scrapers,
+            notifiers,
+            storage,
+            filter,
+        }
+    }
+
+    /// Асинхронный запуск: для каждого URL и каждого скрейпера создаётся задача.
+    ///
+    /// Здесь хорошо видно, как:
+    ///  - `async fn` превращается в `Future` (через вызов `scraper.scrape(url)`),
+    ///  - `join_all` ждёт завершения всех future параллельно,
+    ///  - `timeout` и `sleep` управляют временем ожидания и rate limiting'ом.
+    pub async fn run_async(&mut self, urls: &[String]) {
+        // Собираем все future в один вектор без `tokio::spawn`.
+        //
+        // Важно: future живут не дольше, чем `run_async`, поэтому им не нужен `'static`,
+        // и мы можем безопасно захватывать `&self`.
+        let mut all_futures = Vec::new();
+
+        for scraper in &self.scrapers {
+            for url in urls {
+                let url_clone = url.clone();
+                let scraper_ref = &**scraper;
+
+                let fut = async move {
+                    // Лёгкий rate limiting: небольшая пауза перед запросом к очередному URL.
+                    sleep(Duration::from_millis(500)).await;
+
+                    // Оборачиваем scraping в таймаут: если сайт "повис", не блокируем остальные.
+                    timeout(Duration::from_secs(10), scraper_ref.scrape(&url_clone)).await
+                };
+
+                all_futures.push(fut);
+            }
+        }
+
+        // `join_all` — параллельное ожидание всех задач scraping на одном runtime.
+        // Реальный выигрыш: 5 сайтов × 2с = 10с последовательно против ~2с параллельно.
+        let results: Vec<Result<Result<Vec<Job>, ScrapeError>, tokio::time::error::Elapsed>> =
+            join_all(all_futures).await;
+
+        let mut all_jobs = Vec::new();
+
+        for res in results {
+            match res {
+                Ok(Ok(jobs)) => {
+                    all_jobs.extend(jobs);
+                }
+                Ok(Err(err)) => {
+                    eprintln!("scrape error: {:?}", err);
+                }
+                Err(elapsed) => {
+                    eprintln!("scrape timeout error: {:?}", elapsed);
+                }
+            }
+        }
+
+        // После завершения scraping применяем фильтр, сохраняем и нотифицируем, как и в синхронной версии.
+        let filtered: Vec<Job> = all_jobs
+            .into_iter()
+            .filter(|job| self.filter.matches(job))
+            .collect();
+
+        self.storage.save_jobs(&filtered);
+
+        for job in &filtered {
+            for notifier in &self.notifiers {
+                notifier.send(job);
+            }
+        }
+    }
+}
+
 /// Простейшая реализация `Scraper` для hh.ru.
 ///
 /// В реальном коде она бы выполняла HTTP-запросы и разбирала HTML.
@@ -152,6 +277,45 @@ impl Scraper for HhScraper {
 
         // Переиспользуем уже существующую функцию парсера.
         parse_jobs(html)
+    }
+}
+
+/// Асинхронная версия скрейпера hh.ru.
+///
+/// Здесь мы по‑прежнему используем статический HTML и `parse_jobs`, но структура
+/// полностью готова к замене на настоящий HTTP-клиент (`reqwest::Client::get(...).await` и т.п.).
+pub struct AsyncHhScraper;
+
+impl AsyncScraper for AsyncHhScraper {
+    fn scrape(&self, url: &str) -> BoxFuture<'static, Result<Vec<Job>, ScrapeError>> {
+        // Клонируем URL в отдельную строку, чтобы future могла жить 'static.
+        let url_owned = url.to_string();
+
+        Box::pin(async move {
+            // Типичный async-код:
+            //  - делаем HTTP-запрос (здесь имитация через sleep),
+            //  - ждём его с `.await`, не блокируя поток,
+            //  - парсим HTML после получения ответа.
+
+            // Имитация сетевой задержки.
+            sleep(Duration::from_millis(200)).await;
+
+            // В реальности HTML пришёл бы из сети по адресу `url_owned`.
+            // Здесь — просто строковый литерал, но URL сохраняем для логов.
+            println!("Async scraping from {}", url_owned);
+
+            let html = r#"
+                <div class="job-card">
+                    <div class="title">Junior Rust Developer</div>
+                    <div class="company">Acme Corp</div>
+                    <div class="tech">Rust, Tokio, SQL</div>
+                </div>
+            "#;
+
+            let jobs = parse_jobs(html);
+
+            Ok(jobs)
+        })
     }
 }
 
