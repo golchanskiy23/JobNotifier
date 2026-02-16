@@ -15,6 +15,9 @@ use crate::parser::{dedup, parse_jobs};
 use crate::scheduler::{
     AsyncHhScraper, AsyncScheduler, HhScraper, InMemoryStorage, Scheduler, TelegramNotifier,
 };
+use std::time::Duration;
+use tokio::time::interval;
+use tokio_util::sync::CancellationToken;
 
 /// Точка входа в программу.
 ///
@@ -120,10 +123,25 @@ async fn main() {
     let mut async_scheduler =
         AsyncScheduler::new(async_scrapers, async_notifiers, async_storage, async_filter);
 
-    // Здесь мы реально "входим" в async‑мир:
-    //  - для каждого URL создаётся асинхронная задача scraping;
-    //  - Tokio не блокирует поток, пока ожидает сетевые ответы;
-    //  - все URL обрабатываются параллельно, а не по очереди.
-    async_scheduler.run_async(&urls).await;
+    // --- Главный цикл планировщика через tokio::time::interval + CancellationToken ---
+
+    // Интервал запуска scraping — раз в N секунд (в реальном коде — минуты).
+    let mut tick = interval(Duration::from_secs(10));
+    // Токен для "мягкой" остановки (graceful shutdown).
+    let token = CancellationToken::new();
+
+    loop {
+        tokio::select! {
+            // Каждое "тиканье" интервала запускает полный async-цикл scraping.
+            _ = tick.tick() => {
+                async_scheduler.run_async(&urls).await;
+            }
+            // Ожидаем отмену токена (например, по сигналу).
+            _ = token.cancelled() => {
+                println!("Shutdown requested via CancellationToken");
+                break;
+            }
+        }
+    }
 }
 

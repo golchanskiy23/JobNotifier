@@ -13,7 +13,10 @@ use crate::domain::{Filter, Job};
 use crate::parser::parse_jobs;
 
 use futures::future::{join_all, BoxFuture};
+use std::collections::HashSet;
+use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::{mpsc, RwLock};
 use tokio::time::{sleep, timeout};
 
 /// Trait-обёртка над любым источником вакансий.
@@ -170,6 +173,8 @@ pub struct AsyncScheduler {
     pub notifiers: Vec<Box<dyn Notifier + Send + Sync>>,
     pub storage: Box<dyn Storage + Send + Sync>,
     pub filter: Box<dyn Filter + Send + Sync>,
+    /// Кеш уже увиденных вакансий: много читателей (проверка дубля), редкая запись (новая вакансия).
+    pub seen_jobs: Arc<RwLock<HashSet<(String, String)>>>,
 }
 
 impl AsyncScheduler {
@@ -184,6 +189,7 @@ impl AsyncScheduler {
             notifiers,
             storage,
             filter,
+            seen_jobs: Arc::new(RwLock::new(HashSet::new())),
         }
     }
 
@@ -238,17 +244,54 @@ impl AsyncScheduler {
             }
         }
 
-        // После завершения scraping применяем фильтр, сохраняем и нотифицируем, как и в синхронной версии.
-        let filtered: Vec<Job> = all_jobs
-            .into_iter()
-            .filter(|job| self.filter.matches(job))
-            .collect();
+        // --- Пайплайн Scraper → filter → notifier через mpsc-канал ---
+        //
+        // Вместо общего `Arc<Mutex<Vec<Job>>>` используем bounded-канал:
+        //  - producer (scraper) пишет вакансии;
+        //  - consumer читает их, фильтрует и отправляет нотификации.
+        let (tx, mut rx) = mpsc::channel::<Job>(100);
 
-        self.storage.save_jobs(&filtered);
+        // Продюсер: отправляем все собранные вакансии в канал.
+        for job in all_jobs {
+            // Если получатель закрылся, просто выходим из цикла.
+            if tx.send(job).await.is_err() {
+                break;
+            }
+        }
+        // Закрываем сторону отправителя, чтобы consumer увидел конец потока.
+        drop(tx);
 
-        for job in &filtered {
+        // Консьюмер: читает из канала, применяет фильтр и кеширует новые вакансии в `seen_jobs`.
+        while let Some(job) = rx.recv().await {
+            // Сначала быстрый check на дубликат под read-локом.
+            let key = (job.title.clone(), job.company.clone());
+            {
+                let read_guard = self.seen_jobs.read().await;
+                if read_guard.contains(&key) {
+                    continue;
+                }
+            }
+
+            // Затем эксклюзивная запись: только один писатель добавляет новый ключ.
+            {
+                let mut write_guard = self.seen_jobs.write().await;
+                if !write_guard.insert(key) {
+                    // Пока мы получали write-лок, другой поток мог уже добавить ключ.
+                    continue;
+                }
+            }
+
+            // Применяем trait-овый фильтр.
+            if !self.filter.matches(&job) {
+                continue;
+            }
+
+            // Сохраняем новую вакансию.
+            self.storage.save_jobs(&[job.clone()]);
+
+            // И рассылаем уведомления в каждый канал.
             for notifier in &self.notifiers {
-                notifier.send(job);
+                notifier.send(&job);
             }
         }
     }

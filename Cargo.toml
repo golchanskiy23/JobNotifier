@@ -6,3 +6,4 @@ edition = "2024"
 [dependencies]
 tokio = { version = "1.37", features = ["full"] }
 futures = "0.3"
+tokio-util = { version = "0.7", features = ["full"] }
