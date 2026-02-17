@@ -7,9 +7,13 @@ mod domain;
 // Подключаем модуль с функциями парсинга (`parse_jobs`, `dedup` и т.д.)
 mod parser;
 
+// Модуль конфигурации: список URL и прочие настройки.
+mod config;
+
 // Модуль с trait-архитектурой и планировщиком.
 mod scheduler;
 
+use crate::config::AppConfig;
 use crate::domain::{Filter, Job, JobFilter, ScraperConfig};
 use crate::parser::{dedup, parse_jobs};
 use crate::scheduler::{
@@ -104,13 +108,29 @@ async fn main() {
     let mut scheduler = Scheduler::new(scrapers, notifiers, storage, filter_box);
     scheduler.run();
 
-    // --- Асинхронный цикл scraping через Tokio и join_all ---
+    // --- Загрузка конфигурации списка URL из TOML-файла ---
 
-    // Набор URL (в реальности пришли бы из конфига).
-    let urls = vec![
-        "https://hh.ru/search/vacancy?text=rust".to_string(),
-        "https://hh.ru/search/vacancy?text=backend".to_string(),
-    ];
+    // Конфиг лежит рядом с бинарём / в корне проекта.
+    // Если файл не найден или содержит ошибку, мы логируем проблему и
+    // продолжаем с пустым списком URL (демо-режим).
+    let cfg = match AppConfig::load_from_file("Config.toml") {
+        Ok(cfg) => cfg,
+        Err(err) => {
+            // Здесь мы используем реализацию Display для ConfigError,
+            // что "прочитывает" внутренние поля и устраняет предупреждения о dead_code.
+            eprintln!(
+                "Failed to load Config.toml: {}. Running with empty URL list.",
+                err
+            );
+            AppConfig {
+                scraping: config::ScrapingConfig { urls: Vec::new() },
+            }
+        }
+    };
+
+    // Набор URL теперь задаётся пользователем в `Config.toml` и может содержать
+    // любые сайты: hh.ru, lamoda, avito, linkedin и т.д.
+    let urls = cfg.scraping.urls.clone();
 
     // Async-скрейпер и async-scheduler работают через те же trait'ы Filter/Notifier/Storage,
     // но сами операции scraping выполняются конкурентно внутри Tokio.

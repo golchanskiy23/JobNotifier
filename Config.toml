@@ -1,0 +1,9 @@
+[scraping]
+urls = [
+  # Примеры URL для разных сайтов. Здесь можно указать любые свои.
+  "https://hh.ru/search/vacancy?text=rust",
+  "https://www.lamoda.ru/c/men-home/rabota/",
+  "https://www.avito.ru/moskva/vakansii/programmist",
+]
+
+
