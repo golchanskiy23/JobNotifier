@@ -19,8 +19,9 @@ use crate::parser::{dedup, parse_jobs};
 use crate::scheduler::{
     AsyncHhScraper, AsyncScheduler, HhScraper, InMemoryStorage, Scheduler, TelegramNotifier,
 };
+use chrono::{Local, Timelike};
 use std::time::Duration;
-use tokio::time::interval;
+use tokio::time::{interval_at, Instant, Interval};
 use tokio_util::sync::CancellationToken;
 
 /// Точка входа в программу.
@@ -143,10 +144,20 @@ async fn main() {
     let mut async_scheduler =
         AsyncScheduler::new(async_scrapers, async_notifiers, async_storage, async_filter);
 
-    // --- Главный цикл планировщика через tokio::time::interval + CancellationToken ---
+    // --- Главный цикл планировщика: один запуск в день в заданное время ---
 
-    // Интервал запуска scraping — раз в N секунд (в реальном коде — минуты).
-    let mut tick = interval(Duration::from_secs(10));
+    // Ежедневное время запуска (локальное): 19:00.
+    let target_hour = 19;
+    let target_minute = 0;
+
+    // Вычисляем, через сколько времени нужно запустить первый цикл,
+    // чтобы он попал на "следующие 19:00" (сегодня или завтра).
+    let initial_delay = compute_initial_delay(target_hour, target_minute);
+    let start = Instant::now() + initial_delay;
+
+    // Интервал 24 часа: после первого тика в 19:00 последующие будут каждый день
+    // в это же время.
+    let mut tick: Interval = interval_at(start, Duration::from_secs(24 * 60 * 60));
     // Токен для "мягкой" остановки (graceful shutdown).
     let token = CancellationToken::new();
 
@@ -163,5 +174,33 @@ async fn main() {
             }
         }
     }
+}
+
+/// Считает задержку до ближайшего запуска в локальном времени `HH:MM`.
+///
+/// Пример: сейчас 18:30, `target_hour = 19`, `target_minute = 0` → ~30 минут.
+///         сейчас 20:10, `target_hour = 19`, `target_minute = 0` → до 19:00 завтрашнего дня.
+fn compute_initial_delay(target_hour: u32, target_minute: u32) -> Duration {
+    let now = Local::now();
+
+    // Конструируем "сегодняшнюю" цель в 19:00 локального времени.
+    let today_target = now
+        .with_hour(target_hour)
+        .and_then(|dt| dt.with_minute(target_minute))
+        .and_then(|dt| dt.with_second(0))
+        .and_then(|dt| dt.with_nanosecond(0))
+        .expect("invalid target time");
+
+    let next_run = if today_target > now {
+        // Если 19:00 ещё не наступило — запускаемся сегодня.
+        today_target
+    } else {
+        // Иначе переносим цель на завтра в то же время.
+        today_target + chrono::Duration::days(1)
+    };
+
+    let diff = next_run - now;
+    // Переводим chrono::Duration в std::time::Duration.
+    Duration::from_secs(diff.num_seconds().max(0) as u64)
 }
 
