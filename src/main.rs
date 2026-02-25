@@ -35,15 +35,15 @@ async fn main() {
     // Имитируем HTML‑страницу с вакансиями как строковый литерал.
     // Тип: `&'static str` — ссылка на строку, зашитую в бинарник, без аллокаций в куче.
     let html: &str = r#"
-        <div class="job-card">
-            <div class="title">Junior Rust Developer</div>
-            <div class="company">Acme Corp</div>
-            <div class="tech">Rust, Tokio, SQL</div>
+        <div class="vacancy-card">
+            <a class="vacancy-card__title" href="/vacancy/123">
+                Junior Rust Developer
+            </a>
         </div>
-        <div class="job-card">
-            <div class="title">Intern Backend Engineer</div>
-            <div class="company">Startup X</div>
-            <div class="tech">Rust, Actix, Postgres</div>
+        <div class="vacancy-card">
+            <a class="vacancy-card__title" href="/vacancy/456">
+                Intern Backend Engineer
+            </a>
         </div>
     "#;
 

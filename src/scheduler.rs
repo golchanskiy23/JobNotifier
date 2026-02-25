@@ -310,11 +310,14 @@ impl Scraper for HhScraper {
 
     fn fetch_jobs(&self) -> Vec<Job> {
         // Статический HTML — имитация ответа от hh.ru.
+        //
+        // Важно: классы (`vacancy-card`, `vacancy-card__title`) подобраны так,
+        // чтобы их "увидел" парсер на базе `scraper`.
         let html = r#"
-            <div class="job-card">
-                <div class="title">Junior Rust Developer</div>
-                <div class="company">Acme Corp</div>
-                <div class="tech">Rust, Tokio, SQL</div>
+            <div class="vacancy-card">
+                <a class="vacancy-card__title" href="/vacancy/123">
+                    Junior Rust Developer
+                </a>
             </div>
         "#;
 
@@ -348,10 +351,10 @@ impl AsyncScraper for AsyncHhScraper {
             println!("Async scraping from {}", url_owned);
 
             let html = r#"
-                <div class="job-card">
-                    <div class="title">Junior Rust Developer</div>
-                    <div class="company">Acme Corp</div>
-                    <div class="tech">Rust, Tokio, SQL</div>
+                <div class="vacancy-card">
+                    <a class="vacancy-card__title" href="/vacancy/123">
+                        Junior Rust Developer
+                    </a>
                 </div>
             "#;
 
