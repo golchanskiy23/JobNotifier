@@ -24,6 +24,7 @@ impl Url {
 ///  - `Fixed(120_000)` — фиксированная ставка;
 ///  - `Range(100_000, 150_000)` — "от/до";
 ///  - в будущем можно добавить `Unknown` / `Negotiable` и т.д.
+#[allow(dead_code)] // заглушка: пока не конструируем SalaryRange, но фиксируем API и семантику
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SalaryRange {
     Fixed(u64),

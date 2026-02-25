@@ -10,8 +10,10 @@
 // поэтому добавить новый сайт / новый канал означает просто дописать реализацию trait'а.
 
 use crate::domain::{Filter, Job};
+use crate::errors::{NotifierError, ScraperError, StorageError};
 use crate::parser::parse_jobs;
 
+use anyhow::{Context, Result};
 use futures::future::{join_all, BoxFuture};
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -37,23 +39,6 @@ pub trait Scraper {
     fn fetch_jobs(&self) -> Vec<Job>;
 }
 
-/// Ошибка при асинхронном scraping.
-///
-/// В реальном проекте здесь было бы что‑то вроде enum'а с вариантами
-/// `Network`, `Timeout`, `Parse` и т.д. Для иллюстрации достаточно строки.
-#[allow(dead_code)] // заглушка: пока используем только Debug-представление ошибки
-#[derive(Debug)]
-pub struct ScrapeError {
-    pub message: String,
-}
-
-#[allow(dead_code)] // заглушка: конструктор пока не используется напрямую
-impl ScrapeError {
-    pub fn new(msg: impl Into<String>) -> Self {
-        Self { message: msg.into() }
-    }
-}
-
 /// Асинхронный интерфейс для скрейперов.
 ///
 /// Важный момент: чтобы trait был совместим с `dyn` (динамическими объектами),
@@ -63,7 +48,7 @@ pub trait AsyncScraper: Send + Sync {
     /// Асинхронный сбор вакансий по конкретному URL.
     ///
     /// Метод возвращает "запакованную" future, которую можно `.await` снаружи.
-    fn scrape(&self, url: &str) -> BoxFuture<'static, Result<Vec<Job>, ScrapeError>>;
+    fn scrape(&self, url: &str) -> BoxFuture<'static, std::result::Result<Vec<Job>, ScraperError>>;
 }
 
 /// Trait канала уведомлений.
@@ -76,7 +61,7 @@ pub trait Notifier {
     /// Отправить уведомление о вакансии.
     ///
     /// Используем `&Job`, а не `Job`, чтобы не забирать владение и не копировать структуру.
-    fn send(&self, job: &Job);
+    fn send(&self, job: &Job) -> std::result::Result<(), NotifierError>;
 }
 
 /// Trait абстракции над хранилищем.
@@ -88,13 +73,13 @@ pub trait Storage {
     /// Сохранить набор вакансий.
     ///
     /// Принимаем `&[Job]`, чтобы не забирать владение и не копировать вектор.
-    fn save_jobs(&mut self, jobs: &[Job]);
+    fn save_jobs(&mut self, jobs: &[Job]) -> std::result::Result<(), StorageError>;
 
     /// Загрузить все сохранённые вакансии.
     ///
     /// Возвращаем `Vec<Job>` по значению — вызывающий код становится владельцем данных.
     #[allow(dead_code)] // заглушка: метод будет использоваться позже для инкрементальных обновлений
-    fn load_jobs(&self) -> Vec<Job>;
+    fn load_jobs(&self) -> std::result::Result<Vec<Job>, StorageError>;
 }
 
 /// Scheduler — центральный оркестратор.
@@ -139,7 +124,7 @@ impl Scheduler {
     ///
     /// Обратите внимание: метод принимает `&mut self`, потому что `Storage`
     /// в сигнатуре имеет `&mut self` в `save_jobs`.
-    pub fn run(&mut self) {
+    pub fn run(&mut self) -> Result<()> {
         for scraper in &self.scrapers {
             // Вызов `scraper.fetch_jobs()` через vtable — это и есть динамическая
             // диспетчеризация (`dyn Scraper`). Стоимость одной vtable-инструкции
@@ -153,15 +138,21 @@ impl Scheduler {
                 .collect();
 
             // Сохраняем вакансии в хранилище.
-            self.storage.save_jobs(&filtered);
+            self.storage
+                .save_jobs(&filtered)
+                .context("failed to save jobs (sync scheduler)")?;
 
             // Рассылаем уведомления по всем каналам.
             for job in &filtered {
                 for notifier in &self.notifiers {
-                    notifier.send(job);
+                    notifier
+                        .send(job)
+                        .context("failed to send notification (sync scheduler)")?;
                 }
             }
         }
+
+        Ok(())
     }
 }
 
@@ -199,7 +190,7 @@ impl AsyncScheduler {
     ///  - `async fn` превращается в `Future` (через вызов `scraper.scrape(url)`),
     ///  - `join_all` ждёт завершения всех future параллельно,
     ///  - `timeout` и `sleep` управляют временем ожидания и rate limiting'ом.
-    pub async fn run_async(&mut self, urls: &[String]) {
+    pub async fn run_async(&mut self, urls: &[String]) -> Result<()> {
         // Собираем все future в один вектор без `tokio::spawn`.
         //
         // Важно: future живут не дольше, чем `run_async`, поэтому им не нужен `'static`,
@@ -225,7 +216,12 @@ impl AsyncScheduler {
 
         // `join_all` — параллельное ожидание всех задач scraping на одном runtime.
         // Реальный выигрыш: 5 сайтов × 2с = 10с последовательно против ~2с параллельно.
-        let results: Vec<Result<Result<Vec<Job>, ScrapeError>, tokio::time::error::Elapsed>> =
+        let results: Vec<
+            std::result::Result<
+                std::result::Result<Vec<Job>, ScraperError>,
+                tokio::time::error::Elapsed,
+            >,
+        > =
             join_all(all_futures).await;
 
         let mut all_jobs = Vec::new();
@@ -287,13 +283,19 @@ impl AsyncScheduler {
             }
 
             // Сохраняем новую вакансию.
-            self.storage.save_jobs(&[job.clone()]);
+            self.storage
+                .save_jobs(&[job.clone()])
+                .context("failed to save job (async scheduler)")?;
 
             // И рассылаем уведомления в каждый канал.
             for notifier in &self.notifiers {
-                notifier.send(&job);
+                notifier
+                    .send(&job)
+                    .context("failed to send notification (async scheduler)")?;
             }
         }
+
+        Ok(())
     }
 }
 
@@ -333,7 +335,7 @@ impl Scraper for HhScraper {
 pub struct AsyncHhScraper;
 
 impl AsyncScraper for AsyncHhScraper {
-    fn scrape(&self, url: &str) -> BoxFuture<'static, Result<Vec<Job>, ScrapeError>> {
+    fn scrape(&self, url: &str) -> BoxFuture<'static, std::result::Result<Vec<Job>, ScraperError>> {
         // Клонируем URL в отдельную строку, чтобы future могла жить 'static.
         let url_owned = url.to_string();
 
@@ -371,8 +373,9 @@ impl AsyncScraper for AsyncHhScraper {
 pub struct TelegramNotifier;
 
 impl Notifier for TelegramNotifier {
-    fn send(&self, job: &Job) {
+    fn send(&self, job: &Job) -> std::result::Result<(), NotifierError> {
         println!("[Telegram] New job: {} at {}", job.title, job.company);
+        Ok(())
     }
 }
 
@@ -392,18 +395,19 @@ impl InMemoryStorage {
 }
 
 impl Storage for InMemoryStorage {
-    fn save_jobs(&mut self, jobs: &[Job]) {
+    fn save_jobs(&mut self, jobs: &[Job]) -> std::result::Result<(), StorageError> {
         // Добавляем копии вакансий в in-memory хранилище.
         //
         // Здесь мы осознанно клонируем `Job`, потому что хранилище должно
         // владеть своими данными независимо от вызывающего кода.
         self.jobs.extend(jobs.iter().cloned());
+        Ok(())
     }
 
-    fn load_jobs(&self) -> Vec<Job> {
+    fn load_jobs(&self) -> std::result::Result<Vec<Job>, StorageError> {
         // Возвращаем копию данных — внешнему коду нельзя дать прямой доступ
         // к внутреннему вектору, чтобы не нарушить инварианты хранилища.
-        self.jobs.clone()
+        Ok(self.jobs.clone())
     }
 }
 

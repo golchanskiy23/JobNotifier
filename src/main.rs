@@ -12,6 +12,7 @@ mod config;
 
 // Модуль с trait-архитектурой и планировщиком.
 mod scheduler;
+mod errors;
 
 use crate::config::AppConfig;
 use crate::domain::{Filter, Job, JobFilter, ScraperConfig};
@@ -23,6 +24,7 @@ use chrono::{Local, Timelike};
 use std::time::Duration;
 use tokio::time::{interval_at, Instant, Interval};
 use tokio_util::sync::CancellationToken;
+use anyhow::{Context, Result};
 
 /// Точка входа в программу.
 ///
@@ -31,7 +33,7 @@ use tokio_util::sync::CancellationToken;
 ///  - подготавливается thread pool;
 ///  - запускается `main` как асинхронная задача.
 #[tokio::main]
-async fn main() {
+async fn main() -> Result<()> {
     // Имитируем HTML‑страницу с вакансиями как строковый литерал.
     // Тип: `&'static str` — ссылка на строку, зашитую в бинарник, без аллокаций в куче.
     let html: &str = r#"
@@ -107,7 +109,7 @@ async fn main() {
     let filter_box: Box<dyn Filter> = Box::new(filter.clone());
 
     let mut scheduler = Scheduler::new(scrapers, notifiers, storage, filter_box);
-    scheduler.run();
+    scheduler.run().context("sync scheduler failed")?;
 
     // --- Загрузка конфигурации списка URL из TOML-файла ---
 
@@ -165,7 +167,10 @@ async fn main() {
         tokio::select! {
             // Каждое "тиканье" интервала запускает полный async-цикл scraping.
             _ = tick.tick() => {
-                async_scheduler.run_async(&urls).await;
+                async_scheduler
+                    .run_async(&urls)
+                    .await
+                    .context("failed to run scraping cycle")?;
             }
             // Ожидаем отмену токена (например, по сигналу).
             _ = token.cancelled() => {
@@ -174,6 +179,8 @@ async fn main() {
             }
         }
     }
+
+    Ok(())
 }
 
 /// Считает задержку до ближайшего запуска в локальном времени `HH:MM`.
