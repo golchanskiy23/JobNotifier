@@ -16,6 +16,7 @@
 // ```
 
 use serde::Deserialize;
+use thiserror::Error;
 use std::fs;
 use std::path::Path;
 
@@ -24,6 +25,10 @@ use std::path::Path;
 pub struct ScrapingConfig {
     /// Список произвольных URL для обхода (hh, lamoda, avito и т.д.).
     pub urls: Vec<String>,
+    /// Интервал между запусками scraping в минутах.
+    pub interval_minutes: u64,
+    /// Таймаут HTTP-запроса/парсинга в секундах.
+    pub timeout_secs: u64,
 }
 
 /// Корневая структура всего конфига.
@@ -32,32 +37,17 @@ pub struct AppConfig {
     pub scraping: ScrapingConfig,
 }
 
-/// Ошибки при загрузке конфигурации.
-#[derive(Debug)]
+/// Ошибки при загрузке и валидации конфигурации.
+#[derive(Debug, Error)]
 pub enum ConfigError {
-    Io(std::io::Error),
-    ParseToml(toml::de::Error),
-}
-
-impl From<std::io::Error> for ConfigError {
-    fn from(err: std::io::Error) -> Self {
-        ConfigError::Io(err)
-    }
-}
-
-impl From<toml::de::Error> for ConfigError {
-    fn from(err: toml::de::Error) -> Self {
-        ConfigError::ParseToml(err)
-    }
-}
-
-impl std::fmt::Display for ConfigError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ConfigError::Io(e) => write!(f, "I/O error: {}", e),
-            ConfigError::ParseToml(e) => write!(f, "TOML parse error: {}", e),
-        }
-    }
+    #[error("I/O error: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("TOML parse error: {0}")]
+    ParseToml(#[from] toml::de::Error),
+    #[error("missing config field: {0}")]
+    MissingField(&'static str),
+    #[error("invalid config value: {0}")]
+    InvalidValue(&'static str),
 }
 
 impl AppConfig {
@@ -72,6 +62,30 @@ impl AppConfig {
         // Парсим TOML в строго типизированную структуру.
         let cfg: AppConfig = toml::from_str(&contents)?;
         Ok(cfg)
+    }
+
+    /// Бизнес-валидация конфига.
+    ///
+    /// Здесь мы проверяем семантику значений (пустые списки, нулевые интервалы и т.п.),
+    /// а не синтаксис TOML (это делает парсер).
+    pub fn validate(&self) -> Result<(), ConfigError> {
+        if self.scraping.urls.is_empty() {
+            return Err(ConfigError::MissingField("scraping.urls"));
+        }
+
+        if self.scraping.interval_minutes == 0 {
+            return Err(ConfigError::InvalidValue(
+                "scraping.interval_minutes must be > 0",
+            ));
+        }
+
+        if self.scraping.timeout_secs == 0 {
+            return Err(ConfigError::InvalidValue(
+                "scraping.timeout_secs must be > 0",
+            ));
+        }
+
+        Ok(())
     }
 }
 

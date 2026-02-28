@@ -21,6 +21,7 @@ use crate::scheduler::{
     AsyncHhScraper, AsyncScheduler, HhScraper, InMemoryStorage, Scheduler, TelegramNotifier,
 };
 use chrono::{Local, Timelike};
+use clap::Parser;
 use std::time::Duration;
 use tokio::time::{interval_at, Instant, Interval};
 use tokio_util::sync::CancellationToken;
@@ -34,6 +35,8 @@ use anyhow::{Context, Result};
 ///  - запускается `main` как асинхронная задача.
 #[tokio::main]
 async fn main() -> Result<()> {
+    // --- Парсим CLI-аргументы: путь к конфигу и флаг dry-run ---
+    let args = CliArgs::parse();
     // Имитируем HTML‑страницу с вакансиями как строковый литерал.
     // Тип: `&'static str` — ссылка на строку, зашитую в бинарник, без аллокаций в куче.
     let html: &str = r#"
@@ -111,25 +114,21 @@ async fn main() -> Result<()> {
     let mut scheduler = Scheduler::new(scrapers, notifiers, storage, filter_box);
     scheduler.run().context("sync scheduler failed")?;
 
-    // --- Загрузка конфигурации списка URL из TOML-файла ---
+    // --- Загрузка и валидация конфигурации списка URL из TOML-файла ---
 
-    // Конфиг лежит рядом с бинарём / в корне проекта.
-    // Если файл не найден или содержит ошибку, мы логируем проблему и
-    // продолжаем с пустым списком URL (демо-режим).
-    let cfg = match AppConfig::load_from_file("Config.toml") {
-        Ok(cfg) => cfg,
-        Err(err) => {
-            // Здесь мы используем реализацию Display для ConfigError,
-            // что "прочитывает" внутренние поля и устраняет предупреждения о dead_code.
-            eprintln!(
-                "Failed to load Config.toml: {}. Running with empty URL list.",
-                err
-            );
-            AppConfig {
-                scraping: config::ScrapingConfig { urls: Vec::new() },
-            }
-        }
-    };
+    let cfg = AppConfig::load_from_file(&args.config)
+        .with_context(|| format!("failed to load config from {}", args.config))?;
+
+    cfg.validate()
+        .context("config validation failed")?;
+
+    // Если мы НЕ в режиме dry-run, проверяем наличие секретов в окружении.
+    if !args.dry_run {
+        std::env::var("NOTIFIER_TELEGRAM_TOKEN")
+            .context("env NOTIFIER_TELEGRAM_TOKEN must be set (or run with --dry-run)")?;
+        std::env::var("NOTIFIER_TELEGRAM_CHAT_ID")
+            .context("env NOTIFIER_TELEGRAM_CHAT_ID must be set (or run with --dry-run)")?;
+    }
 
     // Набор URL теперь задаётся пользователем в `Config.toml` и может содержать
     // любые сайты: hh.ru, lamoda, avito, linkedin и т.д.
@@ -138,8 +137,14 @@ async fn main() -> Result<()> {
     // Async-скрейпер и async-scheduler работают через те же trait'ы Filter/Notifier/Storage,
     // но сами операции scraping выполняются конкурентно внутри Tokio.
     let async_scrapers: Vec<Box<dyn scheduler::AsyncScraper>> = vec![Box::new(AsyncHhScraper)];
-    let async_notifiers: Vec<Box<dyn scheduler::Notifier + Send + Sync>> =
-        vec![Box::new(TelegramNotifier)];
+
+    // В режиме dry-run мы не хотим отправлять реальные уведомления,
+    // поэтому просто не создаём ни одного notifier'а.
+    let async_notifiers: Vec<Box<dyn scheduler::Notifier + Send + Sync>> = if args.dry_run {
+        Vec::new()
+    } else {
+        vec![Box::new(TelegramNotifier)]
+    };
     let async_storage: Box<dyn scheduler::Storage + Send + Sync> = Box::new(InMemoryStorage::new());
     let async_filter: Box<dyn Filter + Send + Sync> = Box::new(filter);
 
@@ -181,6 +186,23 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+/// CLI-параметры приложения.
+///
+///  - `--config path` — путь к конфигурационному файлу TOML;
+///  - `--dry-run` — парсинг без отправки уведомлений (но вся остальная логика работает).
+#[derive(Parser, Debug)]
+#[command(name = "job-notifier")]
+#[command(about = "Async Rust job notifier with scraping and Telegram notifications")]
+struct CliArgs {
+    /// Путь к TOML-конфигу. По умолчанию — `Config.toml` в текущем каталоге.
+    #[arg(long, default_value = "Config.toml")]
+    config: String,
+
+    /// Режим отладки: парсить вакансии, но не отправлять уведомления.
+    #[arg(long)]
+    dry_run: bool,
 }
 
 /// Считает задержку до ближайшего запуска в локальном времени `HH:MM`.

@@ -5,5 +5,7 @@ urls = [
   "https://www.lamoda.ru/c/men-home/rabota/",
   "https://www.avito.ru/moskva/vakansii/programmist",
 ]
+interval_minutes = 1440 # раз в сутки
+timeout_secs = 10       # таймаут HTTP/парсинга
 
 
