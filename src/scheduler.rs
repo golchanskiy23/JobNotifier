@@ -164,8 +164,9 @@ pub struct AsyncScheduler {
     pub notifiers: Vec<Box<dyn Notifier + Send + Sync>>,
     pub storage: Box<dyn Storage + Send + Sync>,
     pub filter: Box<dyn Filter + Send + Sync>,
-    /// Кеш уже увиденных вакансий: много читателей (проверка дубля), редкая запись (новая вакансия).
-    pub seen_jobs: Arc<RwLock<HashSet<(String, String)>>>,
+    /// Кеш уже увиденных вакансий (по ключу дедупликации).
+    /// Много читателей (проверка дубля), редкая запись (новая вакансия).
+    pub seen_jobs: Arc<RwLock<HashSet<String>>>,
 }
 
 impl AsyncScheduler {
@@ -259,8 +260,10 @@ impl AsyncScheduler {
 
         // Консьюмер: читает из канала, применяет фильтр и кеширует новые вакансии в `seen_jobs`.
         while let Some(job) = rx.recv().await {
+            // Ключ дедупликации: hash от JSON‑представления `Job`.
+            let key = job.dedup_key();
+
             // Сначала быстрый check на дубликат под read-локом.
-            let key = (job.title.clone(), job.company.clone());
             {
                 let read_guard = self.seen_jobs.read().await;
                 if read_guard.contains(&key) {

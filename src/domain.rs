@@ -2,13 +2,14 @@
 // Здесь особенно хорошо видны решения по владению (String) и заимствованиям (&str).
 
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 
 /// Обёртка над строкой-URL.
 ///
 /// Почему не `String` напрямую:
 ///  - типовая безопасность: компилятор отличает `Url` от "просто строки";
 ///  - в будущем сюда легко добавить валидацию/парсинг без изменения сигнатур.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Url(pub String);
 
 impl Url {
@@ -25,7 +26,7 @@ impl Url {
 ///  - `Range(100_000, 150_000)` — "от/до";
 ///  - в будущем можно добавить `Unknown` / `Negotiable` и т.д.
 #[allow(dead_code)] // заглушка: пока не конструируем SalaryRange, но фиксируем API и семантику
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SalaryRange {
     Fixed(u64),
     Range(u64, u64),
@@ -36,14 +37,16 @@ pub enum SalaryRange {
 /// Обратите внимание:
 ///  - все "долгоживущие" строковые поля — это `String`;
 ///  - `Job` должен переживать момент парсинга HTML, поэтому он не может хранить `&str` на буфер HTML.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Job {
     /// Уникальный идентификатор вакансии.
     ///
     /// В проекте его можно получить как хеш от `(title + company)` — этого достаточно
     /// для дедупликации без отдельной зависимости на UUID.
+    #[serde(rename = "jobId")]
     pub id: String,
     /// Заголовок вакансии, например "Junior Rust Developer".
+    #[serde(rename = "jobTitle")]
     pub title: String,
     /// Компания-работодатель.
     pub company: String,
@@ -51,13 +54,16 @@ pub struct Job {
     /// При `push` сюда мы передаём `String` по move, без лишних копий.
     pub tech_stack: Vec<String>,
     /// Грейд (Junior/Middle/Senior/Lead). Может отсутствовать, если не указан явно.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub grade: Option<JobGrade>,
     /// URL страницы вакансии (обёртка над строкой).
     pub url: Url,
     /// Диапазон зарплаты, если он указан.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub salary: Option<SalaryRange>,
     /// Время, когда вакансия была "увидена" парсером.
     /// Храним как `DateTime<Utc>`, чтобы можно было сортировать и сравнивать.
+    #[serde(with = "chrono::serde::ts_seconds")]
     pub seen_at: DateTime<Utc>,
 }
 
@@ -68,7 +74,7 @@ pub struct Job {
 /// Если позже добавить новый вариант (например, `Principal`), компилятор потребует
 /// обновить все `match` — это защищает от "забытых" кейсов.
 #[allow(dead_code)] // заглушка: enum пока не используется, но описывает грейд для будущей логики
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum JobGrade {
     Junior,
     Middle,
@@ -101,6 +107,29 @@ pub struct JobFilter {
     pub required_tech: Vec<String>,
     // Фильтр по компании: если `Some`, оставляем только вакансии этой компании.
     pub company: Option<String>,
+}
+
+impl Job {
+    /// Строит ключ для дедупликации на основе сериализации `Job` в JSON.
+    ///
+    /// Стратегия из описания:
+    ///  - `Job` → `serde_json::to_string()` → `hash` → строковый ключ;
+    ///  - если структура `Job` изменится, хеш тоже изменится, но это приемлемо
+    ///    для кеша `seen_jobs` (он просто будет перепостроен).
+    pub fn dedup_key(&self) -> String {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+
+        // В нормальной ситуации сериализация не должна падать, потому что все поля
+        // поддерживают `Serialize`. На всякий случай, при ошибке используем title
+        // как базу для хеша, чтобы не паниковать в прод-пути.
+        let json = serde_json::to_string(self).unwrap_or_else(|_| self.title.clone());
+
+        let mut hasher = DefaultHasher::new();
+        json.hash(&mut hasher);
+        let hash = hasher.finish();
+        format!("{:016x}", hash)
+    }
 }
 
 impl JobFilter {
