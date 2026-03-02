@@ -18,7 +18,7 @@ use crate::config::AppConfig;
 use crate::domain::{Filter, Job, JobFilter, ScraperConfig};
 use crate::parser::{dedup, parse_jobs};
 use crate::scheduler::{
-    AsyncHhScraper, AsyncScheduler, HhScraper, InMemoryStorage, Scheduler, TelegramNotifier,
+    AsyncHhScraper, AsyncScheduler, HhScraper, InMemoryStorage, LocalNotifier, Scheduler,
 };
 use chrono::{Local, Timelike};
 use clap::Parser;
@@ -102,10 +102,10 @@ async fn main() -> Result<()> {
     // --- Демонстрация trait-архитектуры с dyn Scraper / Notifier / Storage ---
 
     // Создаём dyn-объекты scrapers / notifiers / storage.
-    // Типы (`HhScraper`, `TelegramNotifier`, `InMemoryStorage`) спрятаны за trait'ами —
+    // Типы (`HhScraper`, `LocalNotifier`, `InMemoryStorage`) спрятаны за trait'ами —
     // scheduler видит только `dyn Scraper`, `dyn Notifier`, `dyn Storage`, `dyn Filter`.
     let scrapers: Vec<Box<dyn scheduler::Scraper>> = vec![Box::new(HhScraper)];
-    let notifiers: Vec<Box<dyn scheduler::Notifier>> = vec![Box::new(TelegramNotifier)];
+    let notifiers: Vec<Box<dyn scheduler::Notifier>> = vec![Box::new(LocalNotifier)];
     let storage: Box<dyn scheduler::Storage> = Box::new(InMemoryStorage::new());
 
     // Для scheduler'а фильтр тоже выступает как `dyn Filter`.
@@ -122,14 +122,6 @@ async fn main() -> Result<()> {
     cfg.validate()
         .context("config validation failed")?;
 
-    // Если мы НЕ в режиме dry-run, проверяем наличие секретов в окружении.
-    if !args.dry_run {
-        std::env::var("NOTIFIER_TELEGRAM_TOKEN")
-            .context("env NOTIFIER_TELEGRAM_TOKEN must be set (or run with --dry-run)")?;
-        std::env::var("NOTIFIER_TELEGRAM_CHAT_ID")
-            .context("env NOTIFIER_TELEGRAM_CHAT_ID must be set (or run with --dry-run)")?;
-    }
-
     // Набор URL теперь задаётся пользователем в `Config.toml` и может содержать
     // любые сайты: hh.ru, lamoda, avito, linkedin и т.д.
     let urls = cfg.scraping.urls.clone();
@@ -143,7 +135,7 @@ async fn main() -> Result<()> {
     let async_notifiers: Vec<Box<dyn scheduler::Notifier + Send + Sync>> = if args.dry_run {
         Vec::new()
     } else {
-        vec![Box::new(TelegramNotifier)]
+        vec![Box::new(LocalNotifier)]
     };
     let async_storage: Box<dyn scheduler::Storage + Send + Sync> = Box::new(InMemoryStorage::new());
     let async_filter: Box<dyn Filter + Send + Sync> = Box::new(filter);
@@ -154,8 +146,8 @@ async fn main() -> Result<()> {
     // --- Главный цикл планировщика: один запуск в день в заданное время ---
 
     // Ежедневное время запуска (локальное): 19:00.
-    let target_hour = 19;
-    let target_minute = 0;
+    let target_hour = 18;
+    let target_minute = 29;
 
     // Вычисляем, через сколько времени нужно запустить первый цикл,
     // чтобы он попал на "следующие 19:00" (сегодня или завтра).

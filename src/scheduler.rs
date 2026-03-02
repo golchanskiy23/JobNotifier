@@ -370,17 +370,28 @@ impl AsyncScraper for AsyncHhScraper {
     }
 }
 
-/// Простейший Telegram-notifier.
+/// Простой локальный notifier для вывода в консоль.
 ///
-/// Вместо реального HTTP-запроса к Telegram Bot API мы просто печатаем в stdout.
-pub struct TelegramNotifier;
+/// Печатает уведомления о вакансиях в stdout для локального просмотра.
+pub struct LocalNotifier;
 
-impl Notifier for TelegramNotifier {
+impl Notifier for LocalNotifier {
     fn send(&self, job: &Job) -> std::result::Result<(), NotifierError> {
-        println!("[Telegram] New job: {} at {}", job.title, job.company);
+        println!("🔔 NEW JOB FOUND:");
+        println!("  📋 Title: {}", job.title);
+        println!("  🏢 Company: {}", job.company);
+        println!("  🔗 URL: {}", job.url.0);
+        println!("  💻 Tech Stack: {}", if job.tech_stack.is_empty() { "Not specified".to_string() } else { job.tech_stack.join(", ") });
+        println!("  💰 Salary: {}", match &job.salary {
+            Some(crate::domain::SalaryRange::Fixed(amount)) => format!("{} ₽", amount),
+            Some(crate::domain::SalaryRange::Range(min, max)) => format!("{} – {} ₽", min, max),
+            None => "Not specified".to_string(),
+        });
+        println!("---");
         Ok(())
     }
 }
+
 
 /// In-memory хранилище вакансий.
 ///
