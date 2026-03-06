@@ -46,8 +46,30 @@ pub enum NotifierError {
 #[allow(dead_code)]
 #[derive(Error, Debug)]
 pub enum StorageError {
+    #[error("connection failed: {0}")]
+    Connection(String),
+    
+    #[error("migration failed: {0}")]
+    Migration(String),
+    
+    #[error("query failed: {0}")]
+    Query(String),
+    
+    #[error("insert failed: {0}")]
+    Insert(String),
+    
+    #[error("delete failed: {0}")]
+    Delete(String),
+    
+    #[error("serialization failed: {0}")]
+    Serialization(String),
+    
+    #[error("deserialization failed: {0}")]
+    Deserialization(String),
+    
     #[error("failed to save jobs: {0}")]
     Save(String),
+    
     #[error("failed to load jobs: {0}")]
     Load(String),
 }

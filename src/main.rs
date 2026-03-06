@@ -1,25 +1,21 @@
 // В этом файле мы покажем, как ownership и borrowing работают
 // на примере доменной модели вакансий и простого парсера HTML.
 
-// Подключаем модуль с доменными структурами (`Job`, фильтр, конфиг парсера и т.п.)
-mod domain;
-
-// Подключаем модуль с функциями парсинга (`parse_jobs`, `dedup` и т.д.)
-mod parser;
-
-// Модуль конфигурации: список URL и прочие настройки.
+// Подключаем модули новой модульной архитектуры
 mod config;
-
-// Модуль с trait-архитектурой и планировщиком.
+mod domain;
+mod scraper;
+mod filter;
+mod notifier;
+mod storage;
 mod scheduler;
 mod errors;
 
 use crate::config::AppConfig;
-use crate::domain::{Filter, Job, JobFilter, ScraperConfig};
-use crate::parser::{dedup, parse_jobs};
-use crate::scheduler::{
-    AsyncHhScraper, AsyncScheduler, HhScraper, InMemoryStorage, LocalNotifier, Scheduler,
-};
+use crate::domain::Filter;
+use crate::scraper::Scraper;
+use crate::notifier::Notifier;
+use crate::storage::{Storage, SqliteStorage};
 use chrono::{Local, Timelike};
 use clap::Parser;
 use std::time::Duration;
@@ -35,166 +31,84 @@ use anyhow::{Context, Result};
 ///  - запускается `main` как асинхронная задача.
 #[tokio::main]
 async fn main() -> Result<()> {
-    // --- Парсим CLI-аргументы: путь к конфигу и флаг dry-run ---
+    // --- Парсим CLI-аргументы ---
     let args = CliArgs::parse();
-    // Имитируем HTML‑страницу с вакансиями как строковый литерал.
-    // Тип: `&'static str` — ссылка на строку, зашитую в бинарник, без аллокаций в куче.
-    let html: &str = r#"
-        <div class="vacancy-card">
-            <a class="vacancy-card__title" href="/vacancy/123">
-                Junior Rust Developer
-            </a>
-        </div>
-        <div class="vacancy-card">
-            <a class="vacancy-card__title" href="/vacancy/456">
-                Intern Backend Engineer
-            </a>
-        </div>
-    "#;
-
-    // Пример использования конфига парсера с lifetime.
-    // Здесь и `url`, и CSS‑селектор — строковые литералы с `'static` lifetime,
-    // поэтому `ScraperConfig<'static>` безопасен.
-    let config = ScraperConfig {
-        url: "https://hh.ru",
-        job_card_selector: "div.job-card",
-    };
-
-    println!("Scraping from: {} with selector: {}", config.url, config.job_card_selector);
-
-    // Вызываем парсер, передавая `&str`, а не `String`.
-    // HTML уже в памяти — нет смысла копировать его в новый `String`.
-    let mut jobs: Vec<Job> = parse_jobs(html);
-
-    // Настраиваем фильтр: ищем вакансии по Rust и company = "Acme Corp".
-    // Здесь мы явно создаём `String` — фильтр должен жить дольше, чем временные &str.
-    let filter = JobFilter {
-        min_grade: Some("junior".to_string()),
-        required_tech: vec!["Rust".to_string()],
-        company: Some("Acme Corp".to_string()),
-    };
-
-    // Используем borrowing: в замыкание попадают ссылки `&Job`, а не владение.
-    // `iter()` даёт `&Job`, `filter.matches(job)` получает `&Job`, сами `Job` остаются во владении `Vec`.
-    let filtered: Vec<&Job> = jobs
-        .iter()
-        // `Filter` — это trait, реализованный для `JobFilter`.
-        // Благодаря этому `scheduler` и другой код могут работать
-        // через обобщённый интерфейс, а не через конкретный тип.
-        .filter(|job| filter.matches(job))
-        .collect();
-
-    // Печатаем отфильтрованные вакансии.
-    // Здесь мы по-прежнему работаем только с заимствованными данными (`&Job`), не двигая владение.
-    for job in &filtered {
-        println!("Matched job: {} at {}", job.title, job.company);
-    }
-
-    // Функция `dedup` принимает владение `Vec<Job>`, так как будет перестраивать коллекцию.
-    // После вызова `dedup(jobs)` переменная `jobs` больше недоступна — она была move'нута.
-    jobs = dedup(jobs);
-
-    // Теперь можно снова итерироваться по `jobs` — это уже новый вектор без дубликатов.
-    for job in &jobs {
-        println!("Unique job: {} at {}", job.title, job.company);
-    }
-
-    // --- Демонстрация trait-архитектуры с dyn Scraper / Notifier / Storage ---
-
-    // Создаём dyn-объекты scrapers / notifiers / storage.
-    // Типы (`HhScraper`, `LocalNotifier`, `InMemoryStorage`) спрятаны за trait'ами —
-    // scheduler видит только `dyn Scraper`, `dyn Notifier`, `dyn Storage`, `dyn Filter`.
-    let scrapers: Vec<Box<dyn scheduler::Scraper>> = vec![Box::new(HhScraper)];
-    let notifiers: Vec<Box<dyn scheduler::Notifier>> = vec![Box::new(LocalNotifier)];
-    let storage: Box<dyn scheduler::Storage> = Box::new(InMemoryStorage::new());
-
-    // Для scheduler'а фильтр тоже выступает как `dyn Filter`.
-    let filter_box: Box<dyn Filter> = Box::new(filter.clone());
-
-    let mut scheduler = Scheduler::new(scrapers, notifiers, storage, filter_box);
-    scheduler.run().context("sync scheduler failed")?;
-
-    // --- Загрузка и валидация конфигурации списка URL из TOML-файла ---
-
+    
+    // --- Загрузка и валидация конфигурации ---
     let cfg = AppConfig::load_from_file(&args.config)
         .with_context(|| format!("failed to load config from {}", args.config))?;
-
+    
     cfg.validate()
         .context("config validation failed")?;
-
-    // Набор URL теперь задаётся пользователем в `Config.toml` и может содержать
-    // любые сайты: hh.ru, lamoda, avito, linkedin и т.д.
-    let urls = cfg.scraping.urls.clone();
-
-    // Async-скрейпер и async-scheduler работают через те же trait'ы Filter/Notifier/Storage,
-    // но сами операции scraping выполняются конкурентно внутри Tokio.
-    let async_scrapers: Vec<Box<dyn scheduler::AsyncScraper>> = vec![Box::new(AsyncHhScraper)];
-
-    // В режиме dry-run мы не хотим отправлять реальные уведомления,
-    // поэтому просто не создаём ни одного notifier'а.
-    let async_notifiers: Vec<Box<dyn scheduler::Notifier + Send + Sync>> = if args.dry_run {
-        Vec::new()
+    
+    // --- Инициализация хранилища ---
+    let storage: Box<dyn Storage> = Box::new(
+        SqliteStorage::new("sqlite:job_notifier.db")
+            .await
+            .context("failed to initialize storage")?
+    );
+    
+    // --- Инициализация скрейперов ---
+    let scrapers: Vec<Box<dyn Scraper>> = vec![
+        Box::new(crate::scraper::HhScraper),
+    ];
+    
+    // --- Инициализация нотификаторов ---
+    let notifiers: Vec<Box<dyn Notifier>> = vec![
+        Box::new(crate::notifier::ConsoleNotifier),
+    ];
+    
+    // --- Создание и запуск планировщика ---
+    let mut scheduler = scheduler::JobScheduler::new(
+        scrapers,
+        notifiers,
+        storage,
+        create_filter(),
+    );
+    
+    // --- Запуск в режиме однократного выполнения или планировщика ---
+    if args.run_once {
+        scheduler.run_once(&cfg.scraping.urls).await?;
     } else {
-        vec![Box::new(LocalNotifier)]
-    };
-    let async_storage: Box<dyn scheduler::Storage + Send + Sync> = Box::new(InMemoryStorage::new());
-    let async_filter: Box<dyn Filter + Send + Sync> = Box::new(filter);
-
-    let mut async_scheduler =
-        AsyncScheduler::new(async_scrapers, async_notifiers, async_storage, async_filter);
-
-    // --- Главный цикл планировщика: один запуск в день в заданное время ---
-
-    // Ежедневное время запуска (локальное): 19:00.
-    let target_hour = 18;
-    let target_minute = 29;
-
-    // Вычисляем, через сколько времени нужно запустить первый цикл,
-    // чтобы он попал на "следующие 19:00" (сегодня или завтра).
-    let initial_delay = compute_initial_delay(target_hour, target_minute);
-    let start = Instant::now() + initial_delay;
-
-    // Интервал 24 часа: после первого тика в 19:00 последующие будут каждый день
-    // в это же время.
-    let mut tick: Interval = interval_at(start, Duration::from_secs(24 * 60 * 60));
-    // Токен для "мягкой" остановки (graceful shutdown).
-    let token = CancellationToken::new();
-
-    loop {
-        tokio::select! {
-            // Каждое "тиканье" интервала запускает полный async-цикл scraping.
-            _ = tick.tick() => {
-                async_scheduler
-                    .run_async(&urls)
-                    .await
-                    .context("failed to run scraping cycle")?;
-            }
-            // Ожидаем отмену токена (например, по сигналу).
-            _ = token.cancelled() => {
-                println!("Shutdown requested via CancellationToken");
-                break;
-            }
-        }
+        scheduler.run_scheduler(&cfg.scraping.urls).await?;
     }
-
+    
     Ok(())
 }
 
+/// Создает комбинированный фильтр вакансий
+fn create_filter() -> Box<dyn Filter> {
+    use crate::filter::{GradeFilter, KeywordFilter, TechFilter, AndFilter};
+    
+    let grade_filter = GradeFilter::new(Some(crate::domain::JobGrade::Junior));
+    let keyword_filter = KeywordFilter::new(
+        vec!["rust".to_string(), "backend".to_string()],
+        vec!["senior".to_string(), "lead".to_string()], // Исключаем senior позиции
+    );
+    let tech_filter = TechFilter::new(
+        vec!["rust".to_string()], // Обязательно Rust
+        vec![],
+    );
+    
+    // Комбинируем фильтры: все условия должны выполняться
+    Box::new(AndFilter::new(
+        AndFilter::new(grade_filter, keyword_filter),
+        tech_filter,
+    ))
+}
+
 /// CLI-параметры приложения.
-///
-///  - `--config path` — путь к конфигурационному файлу TOML;
-///  - `--dry-run` — парсинг без отправки уведомлений (но вся остальная логика работает).
 #[derive(Parser, Debug)]
 #[command(name = "job-notifier")]
-#[command(about = "Async Rust job notifier with scraping and Telegram notifications")]
+#[command(about = "Async Rust job notifier with SQLite storage and local notifications")]
 struct CliArgs {
     /// Путь к TOML-конфигу. По умолчанию — `Config.toml` в текущем каталоге.
     #[arg(long, default_value = "Config.toml")]
     config: String,
 
-    /// Режим отладки: парсить вакансии, но не отправлять уведомления.
+    /// Запустить один раз и выйти
     #[arg(long)]
-    dry_run: bool,
+    run_once: bool,
 }
 
 /// Считает задержку до ближайшего запуска в локальном времени `HH:MM`.
