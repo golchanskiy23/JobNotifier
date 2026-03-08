@@ -71,7 +71,7 @@ impl JobScheduler {
         
         // Настройка времени запуска (каждый час)
         let target_hour = 19;
-        let target_minute = 7;
+        let target_minute = 17;
         let initial_delay = self.compute_initial_delay(target_hour, target_minute);
         let start = Instant::now() + initial_delay;
         

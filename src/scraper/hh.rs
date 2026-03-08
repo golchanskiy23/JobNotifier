@@ -11,43 +11,22 @@ pub struct HhScraper;
 #[async_trait]
 impl Scraper for HhScraper {
     async fn scrape(&self, url: &str) -> Result<Vec<Job>, ScraperError> {
-        // В реальном приложении здесь был бы HTTP-запрос
-        // Для демонстрации используем статический HTML
-        let html = r#"
-            <div class="vacancy-card">
-                <a class="vacancy-card__title" href="/vacancy/123">
-                    Junior Rust Developer
-                </a>
-                <div class="vacancy-card__company">
-                    Яндекс
-                </div>
-                <div class="vacancy-card__salary">
-                    150 000 – 200 000 ₽
-                </div>
-                <div class="vacancy-card__skills">
-                    <span>Rust</span>
-                    <span>Tokio</span>
-                    <span>PostgreSQL</span>
-                </div>
-            </div>
-            <div class="vacancy-card">
-                <a class="vacancy-card__title" href="/vacancy/456">
-                    Middle Backend Engineer
-                </a>
-                <div class="vacancy-card__company">
-                    Сбер
-                </div>
-                <div class="vacancy-card__salary">
-                    250 000 ₽
-                </div>
-                <div class="vacancy-card__skills">
-                    <span>Go</span>
-                    <span>Kubernetes</span>
-                </div>
-            </div>
-        "#;
+        // Делаем реальный HTTP запрос
+        let response = reqwest::get(url)
+            .await
+            .map_err(|e| ScraperError::Network { 
+                url: url.to_string(), 
+                source: e 
+            })?;
+        
+        let html = response.text()
+            .await
+            .map_err(|e| ScraperError::Network { 
+                url: url.to_string(), 
+                source: e 
+            })?;
 
-        self.parse_html(html, url)
+        self.parse_html(&html, url)
     }
 
     fn name(&self) -> &str {
@@ -60,19 +39,20 @@ impl HhScraper {
     fn parse_html(&self, html: &str, base_url: &str) -> Result<Vec<Job>, ScraperError> {
         let document = Html::parse_document(html);
         
-        let card_selector = Selector::parse("div.vacancy-card")
+        // Селекторы для реальной структуры hh.ru
+        let card_selector = Selector::parse("div.magazine-serp__item")
             .map_err(|e| ScraperError::Parse(format!("Invalid selector: {}", e)))?;
         
-        let title_selector = Selector::parse("a.vacancy-card__title")
+        let title_selector = Selector::parse("a.bloko-link")
             .map_err(|e| ScraperError::Parse(format!("Invalid selector: {}", e)))?;
         
-        let company_selector = Selector::parse("div.vacancy-card__company")
+        let company_selector = Selector::parse("span.bloko-text")
             .map_err(|e| ScraperError::Parse(format!("Invalid selector: {}", e)))?;
         
-        let salary_selector = Selector::parse("div.vacancy-card__salary")
+        let salary_selector = Selector::parse("span.bloko-header-2")
             .map_err(|e| ScraperError::Parse(format!("Invalid selector: {}", e)))?;
         
-        let skills_selector = Selector::parse("div.vacancy-card__skills span")
+        let skills_selector = Selector::parse("div.magazine-serp__item-meta span")
             .map_err(|e| ScraperError::Parse(format!("Invalid selector: {}", e)))?;
         
         let mut jobs = Vec::new();
