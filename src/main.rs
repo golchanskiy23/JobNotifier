@@ -58,6 +58,22 @@ async fn main() -> Result<()> {
         Box::new(crate::notifier::ConsoleNotifier),
     ];
     
+    // --- Обработка CLI команд для работы с БД ---
+    if args.stats {
+        show_stats(&storage).await?;
+        return Ok(());
+    }
+
+    if let Some(limit) = args.recent {
+        show_recent_jobs(&storage, limit).await?;
+        return Ok(());
+    }
+
+    if let Some(days) = args.cleanup {
+        cleanup_old_jobs(&storage, days).await?;
+        return Ok(());
+    }
+    
     // --- Создание и запуск планировщика ---
     let mut scheduler = scheduler::JobScheduler::new(
         scrapers,
@@ -72,6 +88,57 @@ async fn main() -> Result<()> {
     } else {
         scheduler.run_scheduler(&cfg.scraping.urls).await?;
     }
+    
+    Ok(())
+}
+
+/// Показывает статистику из базы данных
+async fn show_stats(storage: &Box<dyn Storage>) -> Result<()> {
+    let stats = storage.get_stats().await
+        .context("Failed to get stats")?;
+    
+    println!("📊 Job Statistics:");
+    println!("   Total jobs seen: {}", stats.total_seen);
+    println!("   Jobs in last 24h: {}", stats.last_24h);
+    
+    Ok(())
+}
+
+/// Показывает последние вакансии
+async fn show_recent_jobs(storage: &Box<dyn Storage>, limit: usize) -> Result<()> {
+    let jobs = storage.get_seen_jobs(Some(limit as i64)).await
+        .context("Failed to get recent jobs")?;
+    
+    println!("📋 Last {} jobs:", limit);
+    println!("{}", "=".repeat(50));
+    
+    for (i, job) in jobs.iter().enumerate() {
+        println!("📋 Job #{}", i + 1);
+        println!("   🏢 Company: {}", job.company);
+        println!("   💼 Title: {}", job.title);
+        println!("   🔗 URL: {}", job.url);
+        if let Some(grade) = &job.grade {
+            println!("   📊 Grade: {:?}", grade);
+        }
+        if !job.tech_stack.is_empty() {
+            println!("   💻 Tech Stack: {}", job.tech_stack.join(", "));
+        }
+        if let Some(salary) = &job.salary {
+            println!("   💰 Salary: {}", salary);
+        }
+        println!("   📅 Found: {}", job.seen_at.format("%Y-%m-%d %H:%M:%S UTC"));
+        println!();
+    }
+    
+    Ok(())
+}
+
+/// Очищает старые записи
+async fn cleanup_old_jobs(storage: &Box<dyn Storage>, days: u64) -> Result<()> {
+    let deleted = storage.cleanup_old_jobs(days as i64).await
+        .context("Failed to cleanup old jobs")?;
+    
+    println!("🗑️  Cleaned up {} old job records (older than {} days)", deleted, days);
     
     Ok(())
 }
@@ -109,6 +176,18 @@ struct CliArgs {
     /// Запустить один раз и выйти
     #[arg(long)]
     run_once: bool,
+
+    /// Показать статистику из базы данных
+    #[arg(long)]
+    stats: bool,
+
+    /// Показать последние N вакансий из базы данных
+    #[arg(long)]
+    recent: Option<usize>,
+
+    /// Очистить старые записи (старше N дней)
+    #[arg(long)]
+    cleanup: Option<u64>,
 }
 
 /// Считает задержку до ближайшего запуска в локальном времени `HH:MM`.

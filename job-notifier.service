@@ -1,0 +1,19 @@
+[Unit]
+Description=JobNotifier - Job Search Service
+After=network.target
+
+[Service]
+Type=simple
+User=bloom
+WorkingDirectory=/home/bloom/Projects/JobNotifier
+ExecStart=/home/bloom/.cargo/bin/cargo run --bin JobNotifier --release
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+# Environment variables if needed
+# Environment=RUST_LOG=info
+
+[Install]
+WantedBy=multi-user.target
