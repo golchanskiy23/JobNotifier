@@ -6,15 +6,12 @@ use crate::errors::StorageError;
 use crate::storage::{Storage, JobStats};
 use async_trait::async_trait;
 
-/// SQLite хранилище вакансий
 pub struct SqliteStorage {
     pool: Pool<Sqlite>,
 }
 
 impl SqliteStorage {
-    /// Создает новое SQLite хранилище
     pub async fn new(database_url: &str) -> Result<Self, StorageError> {
-        // Создаем директорию для базы данных если она не существует
         if database_url.starts_with("sqlite:") {
             let db_path = database_url.strip_prefix("sqlite:").unwrap_or(database_url);
             if let Some(parent) = std::path::Path::new(db_path).parent() {
@@ -27,7 +24,6 @@ impl SqliteStorage {
             .await
             .map_err(|e| StorageError::Connection(format!("Failed to connect to database: {}", e)))?;
         
-        // Создаем таблицы если их нет
         self::migrations::run_migrations(&pool).await?;
         
         Ok(Self { pool })
@@ -37,7 +33,6 @@ impl SqliteStorage {
 #[async_trait]
 impl Storage for SqliteStorage {
     
-    /// Проверяет, была ли вакансия уже видена
     async fn is_job_seen(&self, job: &Job) -> Result<bool, StorageError> {
         let dedup_key = job.dedup_key();
         
@@ -52,7 +47,6 @@ impl Storage for SqliteStorage {
         Ok(result > 0)
     }
     
-    /// Отмечает вакансию как виденную
     async fn mark_job_seen(&self, job: &Job) -> Result<(), StorageError> {
         let dedup_key = job.dedup_key();
         let job_json = serde_json::to_string(job)
@@ -71,7 +65,6 @@ impl Storage for SqliteStorage {
         Ok(())
     }
     
-    /// Получает все виденные вакансии
     async fn get_seen_jobs(&self, limit: Option<i64>) -> Result<Vec<Job>, StorageError> {
         let rows = if let Some(limit) = limit {
             sqlx::query_as::<_, (String,)>(
@@ -100,7 +93,6 @@ impl Storage for SqliteStorage {
         Ok(jobs)
     }
     
-    /// Очищает старые записи (старше указанного количества дней)
     async fn cleanup_old_jobs(&self, days_old: i64) -> Result<u64, StorageError> {
         let cutoff_date = Utc::now() - chrono::Duration::days(days_old);
         
@@ -115,7 +107,6 @@ impl Storage for SqliteStorage {
         Ok(result.rows_affected())
     }
     
-    /// Получает статистику по вакансиям
     async fn get_stats(&self) -> Result<JobStats, StorageError> {
         let total_jobs = sqlx::query_scalar::<_, i64>(
             "SELECT COUNT(*) FROM seen_jobs"
@@ -140,12 +131,10 @@ impl Storage for SqliteStorage {
     }
 }
 
-/// Миграции базы данных
 mod migrations {
     use sqlx::{Pool, Sqlite};
     
     pub async fn run_migrations(pool: &Pool<Sqlite>) -> Result<(), crate::errors::StorageError> {
-        // Создаем таблицу для отслеживания виденных вакансий
         sqlx::query(
             r#"
             CREATE TABLE IF NOT EXISTS seen_jobs (
@@ -161,7 +150,6 @@ mod migrations {
         .await
         .map_err(|e| crate::errors::StorageError::Migration(format!("Failed to create table: {}", e)))?;
         
-        // Создаем индекс для быстрого поиска
         sqlx::query(
             "CREATE INDEX IF NOT EXISTS idx_seen_jobs_dedup_key ON seen_jobs(dedup_key)"
         )
@@ -169,7 +157,6 @@ mod migrations {
         .await
         .map_err(|e| crate::errors::StorageError::Migration(format!("Failed to create index: {}", e)))?;
         
-        // Создаем индекс для сортировки по времени
         sqlx::query(
             "CREATE INDEX IF NOT EXISTS idx_seen_jobs_seen_at ON seen_jobs(seen_at DESC)"
         )

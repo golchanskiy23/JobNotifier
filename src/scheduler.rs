@@ -5,10 +5,10 @@ use crate::storage::Storage;
 use anyhow::{Context, Result};
 use std::time::Duration;
 use tokio::time::{interval_at, Instant, sleep};
+use tokio::signal;
 use tokio_util::sync::CancellationToken;
 use chrono::{Local, Timelike};
 
-/// Планировщик вакансий
 pub struct JobScheduler {
     scrapers: Vec<Box<dyn Scraper>>,
     notifiers: Vec<Box<dyn Notifier>>,
@@ -17,7 +17,6 @@ pub struct JobScheduler {
 }
 
 impl JobScheduler {
-    /// Создает новый планировщик
     pub fn new(
         scrapers: Vec<Box<dyn Scraper>>,
         notifiers: Vec<Box<dyn Notifier>>,
@@ -32,92 +31,82 @@ impl JobScheduler {
         }
     }
     
-    /// Запускает однократную проверку вакансий
     pub async fn run_once(&mut self, urls: &[String]) -> Result<()> {
-        println!("🔍 Starting job search...");
+        println!("Starting job search...");
         
-        // Собираем вакансии со всех URL
         let all_jobs = self.scrape_all_urls(urls).await?;
         
-        // Фильтруем вакансии
         let filtered_jobs: Vec<Job> = all_jobs
             .into_iter()
             .filter(|job| self.filter.matches(job))
             .collect();
         
-        // Проверяем на дубликаты и сохраняем новые
         let new_jobs = self.deduplicate_and_save(&filtered_jobs).await?;
         
-        // Отправляем уведомления
         if !new_jobs.is_empty() {
             for notifier in &self.notifiers {
                 notifier.notify(&new_jobs).await
                     .context("Failed to send notification")?;
             }
         } else {
-            println!("📭 No new jobs found");
+            println!("No new jobs found");
         }
         
-        // Показываем статистику
         self.show_stats().await?;
         
-        println!("✅ Job search completed");
+        println!("Job search completed");
         Ok(())
     }
     
-    /// Запускает планировщик с периодическими проверками
     pub async fn run_scheduler(&mut self, urls: &[String]) -> Result<()> {
-        println!("🚀 Starting job scheduler...");
+        println!("Starting job scheduler...");
         
-        // Настройка времени запуска (каждый час)
-        let target_hour = 19;
-        let target_minute = 17;
+        let target_hour = 11;
+        let target_minute = 02;
         let initial_delay = self.compute_initial_delay(target_hour, target_minute);
         let start = Instant::now() + initial_delay;
         
-        // Интервал 1 час для демонстрации (в проде можно 24 часа)
-        let mut tick = interval_at(start, Duration::from_secs(60 * 60));
-        let token = CancellationToken::new();
+        let mut tick = interval_at(start, Duration::from_secs(60 * 60 * 24));
         
-        println!("⏰ Scheduler will start at {}:{}", target_hour, target_minute);
+        println!("Scheduler will start at {}:{}", target_hour, target_minute);
+        println!("Press Ctrl+C to stop the scheduler");
         
         loop {
             tokio::select! {
                 _ = tick.tick() => {
-                    println!("🔄 Running scheduled job check...");
+                    println!("Running scheduled job check...");
                     if let Err(e) = self.run_once(urls).await {
-                        eprintln!("❌ Error in scheduled run: {}", e);
+                        eprintln!("Error in scheduled run: {}", e);
                     }
                 }
-                _ = token.cancelled() => {
-                    println!("🛑 Scheduler shutdown requested");
+                _ = tokio::signal::ctrl_c() => {
+                    println!("Ctrl+C received - shutting down scheduler...");
                     break;
                 }
             }
         }
         
+        println!("Scheduler stopped gracefully");
         Ok(())
     }
     
-    /// Собирает вакансии со всех URL
     async fn scrape_all_urls(&self, urls: &[String]) -> Result<Vec<Job>> {
         let mut all_jobs = Vec::new();
         
         for scraper in &self.scrapers {
             for url in urls {
-                println!("🌐 Scraping {} with {}", scraper.name(), url);
+                println!("Scraping {} with {}", scraper.name(), url);
                 
                 match scraper.scrape(url).await {
                     Ok(jobs) => {
-                        println!("✅ Found {} jobs from {}", jobs.len(), scraper.name());
+                        println!("Found {} jobs from {}", jobs.len(), scraper.name());
                         all_jobs.extend(jobs);
                     }
                     Err(e) => {
-                        eprintln!("❌ Error scraping {}: {}", url, e);
+                        eprintln!("Error scraping {}: {}", url, e);
                     }
                 }
                 
-                // Небольшая задержка между запросами
                 sleep(Duration::from_millis(500)).await;
             }
         }
@@ -125,7 +114,6 @@ impl JobScheduler {
         Ok(all_jobs)
     }
     
-    /// Удаляет дубликаты и сохраняет новые вакансии
     async fn deduplicate_and_save(&mut self, jobs: &[Job]) -> Result<Vec<Job>> {
         let mut new_jobs = Vec::new();
         
@@ -140,22 +128,20 @@ impl JobScheduler {
         Ok(new_jobs)
     }
     
-    /// Показывает статистику
     async fn show_stats(&self) -> Result<()> {
         match self.storage.get_stats().await {
             Ok(stats) => {
-                println!("📊 Statistics:");
-                println!("   Total jobs seen: {}", stats.total_seen);
-                println!("   Jobs in last 24h: {}", stats.last_24h);
+                println!("Statistics:");
+                println!("Total jobs seen: {}", stats.total_seen);
+                println!("Jobs in last 24h: {}", stats.last_24h);
             }
             Err(e) => {
-                eprintln!("⚠️  Failed to get stats: {}", e);
+                eprintln!("Failed to get stats: {}", e);
             }
         }
         Ok(())
     }
     
-    /// Вычисляет задержку до ближайшего запуска
     fn compute_initial_delay(&self, target_hour: u32, target_minute: u32) -> Duration {
         use chrono::Local;
         

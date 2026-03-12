@@ -1,6 +1,5 @@
 use crate::domain::{Job, JobGrade, Filter};
 
-/// Фильтр по уровню грейда
 #[derive(Debug, Clone)]
 pub struct GradeFilter {
     pub min_grade: Option<JobGrade>,
@@ -16,14 +15,12 @@ impl Filter for GradeFilter {
     fn matches(&self, job: &Job) -> bool {
         if let Some(ref min_grade) = self.min_grade {
             if let Some(ref job_grade) = job.grade {
-                // Сравниваем грейды по уровню
-                self.grade_to_number(job_grade) >= self.grade_to_number(min_grade)
+                return self.grade_to_number(job_grade) >= self.grade_to_number(min_grade);
             } else {
-                false // Если у вакансии нет грейда, не проходит фильтр
+                return false;
             }
-        } else {
-            true // Фильтр не задан, пропускаем все
         }
+        true
     }
 }
 
@@ -41,7 +38,6 @@ impl GradeFilter {
     }
 }
 
-/// Фильтр по ключевым словам в названии
 #[derive(Debug, Clone)]
 pub struct KeywordFilter {
     pub keywords: Vec<String>,
@@ -58,7 +54,6 @@ impl Filter for KeywordFilter {
     fn matches(&self, job: &Job) -> bool {
         let title_lower = job.title.to_lowercase();
         
-        // Проверяем обязательные ключевые слова
         if !self.keywords.is_empty() {
             let has_required = self.keywords.iter().any(|keyword| {
                 title_lower.contains(&keyword.to_lowercase())
@@ -68,7 +63,6 @@ impl Filter for KeywordFilter {
             }
         }
         
-        // Исключаем вакансии с нежелательными словами
         for exclude_word in &self.exclude {
             if title_lower.contains(&exclude_word.to_lowercase()) {
                 return false;
@@ -79,7 +73,6 @@ impl Filter for KeywordFilter {
     }
 }
 
-/// Фильтр по компании
 #[derive(Debug, Clone)]
 pub struct CompanyFilter {
     pub companies: Vec<String>,
@@ -103,7 +96,6 @@ impl Filter for CompanyFilter {
     }
 }
 
-/// Фильтр по технологическому стеку
 #[derive(Debug, Clone)]
 pub struct TechFilter {
     pub required_tech: Vec<String>,
@@ -122,14 +114,12 @@ impl Filter for TechFilter {
             .map(|tech| tech.to_lowercase())
             .collect();
         
-        // Проверяем обязательные технологии
         for required in &self.required_tech {
             if !job_tech.contains(&required.to_lowercase()) {
                 return false;
             }
         }
         
-        // Исключаем вакансии с нежелательными технологиями
         for exclude in &self.exclude_tech {
             if job_tech.contains(&exclude.to_lowercase()) {
                 return false;
@@ -140,7 +130,6 @@ impl Filter for TechFilter {
     }
 }
 
-/// Композиционный фильтр "И" - все фильтры должны вернуть true
 #[derive(Debug, Clone)]
 pub struct AndFilter<F1, F2> {
     pub first: F1,
@@ -167,7 +156,6 @@ where
     }
 }
 
-/// Композиционный фильтр "ИЛИ" - хотя бы один фильтр должен вернуть true
 #[derive(Debug, Clone)]
 pub struct OrFilter<F1, F2> {
     pub first: F1,
