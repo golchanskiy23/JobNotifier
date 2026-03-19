@@ -12,6 +12,31 @@ pub struct ScrapingConfig {
     pub keywords: Vec<String>,
     #[serde(default)]
     pub user_agent: Option<String>,
+    /// Использовать headless Chromium для всех URL (устаревший флаг, используй browser_urls)
+    #[serde(default)]
+    pub use_browser: bool,
+    /// Список URL которые нужно скрейпить через headless Chromium (SPA-сайты)
+    /// Если пустой и use_browser=true — браузер используется для всех URL
+    #[serde(default)]
+    pub browser_urls: Vec<String>,
+    /// Путь к исполняемому файлу Chromium (None = автопоиск)
+    #[serde(default)]
+    pub chrome_path: Option<String>,
+    /// Время ожидания JS-рендеринга в миллисекундах (по умолчанию 3000)
+    #[serde(default)]
+    pub browser_wait_ms: Option<u64>,
+}
+
+impl ScrapingConfig {
+    /// Нужно ли использовать браузер для данного URL
+    pub fn needs_browser(&self, url: &str) -> bool {
+        if !self.browser_urls.is_empty() {
+            // Точное совпадение или URL начинается с одного из browser_urls
+            self.browser_urls.iter().any(|b| url == b || url.starts_with(b.trim_end_matches('/')))
+        } else {
+            self.use_browser
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]

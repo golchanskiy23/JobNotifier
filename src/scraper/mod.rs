@@ -15,5 +15,7 @@ pub trait Scraper: Send + Sync {
 pub mod hh;
 pub mod universal;
 pub mod grade;
+pub mod browser;
 
 pub use universal::UniversalScraper;
+pub use browser::BrowserScraper;

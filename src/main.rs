@@ -164,19 +164,37 @@ async fn run_main(args: RunArgs) -> Result<()> {
 
     cfg.validate().context("config validation failed")?;
 
-    let scrapers: Vec<Box<dyn Scraper>> = vec![
-        Box::new(crate::scraper::UniversalScraper::new(
+    let browser_scraper: Option<Box<dyn Scraper>> = if cfg.scraping.use_browser || !cfg.scraping.browser_urls.is_empty() {
+        Some(Box::new(crate::scraper::BrowserScraper::new(
             cfg.scraping.keywords.clone(),
             cfg.scraping.user_agent.clone(),
-        )),
-    ];
+            cfg.scraping.chrome_path.clone(),
+            cfg.scraping.browser_wait_ms,
+        )))
+    } else {
+        None
+    };
+
+    let default_scraper: Box<dyn Scraper> = Box::new(crate::scraper::UniversalScraper::new(
+        cfg.scraping.keywords.clone(),
+        cfg.scraping.user_agent.clone(),
+    ));
+
+    let browser_urls = if cfg.scraping.browser_urls.is_empty() && cfg.scraping.use_browser {
+        // Старый режим: use_browser=true без browser_urls → все URL через браузер
+        cfg.scraping.urls.clone()
+    } else {
+        cfg.scraping.browser_urls.clone()
+    };
 
     let notifiers: Vec<Box<dyn Notifier>> = vec![
         Box::new(crate::notifier::ConsoleNotifier),
     ];
 
     let mut scheduler = scheduler::JobScheduler::new(
-        scrapers,
+        default_scraper,
+        browser_scraper,
+        browser_urls,
         notifiers,
         storage,
         create_filter(),
@@ -355,17 +373,11 @@ async fn cleanup_old_jobs(storage: &Box<dyn Storage>, days: u64) -> Result<()> {
 }
 
 fn create_filter() -> Box<dyn Filter> {
-    use crate::filter::{GradeFilter, KeywordFilter, TechFilter, AndFilter};
-
-    let grade_filter = GradeFilter::new(Some(crate::domain::JobGrade::Junior));
-    let keyword_filter = KeywordFilter::new(
-        vec!["rust".to_string(), "backend".to_string()],
-        vec!["senior".to_string(), "lead".to_string()],
-    );
-    let tech_filter = TechFilter::new(vec!["rust".to_string()], vec![]);
-
-    Box::new(AndFilter::new(
-        AndFilter::new(grade_filter, keyword_filter),
-        tech_filter,
-    ))
+    // Filtering is already done by UniversalScraper via keywords config.
+    // Return a pass-through filter that accepts all jobs.
+    struct AllowAll;
+    impl Filter for AllowAll {
+        fn matches(&self, _job: &crate::domain::Job) -> bool { true }
+    }
+    Box::new(AllowAll)
 }

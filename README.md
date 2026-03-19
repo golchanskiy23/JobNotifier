@@ -1,228 +1,140 @@
-# Job Notifier — инструкция по запуску и проверке
+# JobNotifier
 
-## 1. Сборка
+Инструмент для мониторинга вакансий с произвольных сайтов и трекинга откликов. Написан на Rust.
+
+## Возможности
+
+- Скрейпинг любых сайтов с вакансиями — без привязки к структуре URL
+- Поддержка SPA-сайтов (React/Vue) через headless Chromium
+- Фильтрация по ключевым словам с учётом границ слов (`Go` не зацепит `MongoDB`)
+- Дедупликация — повторные уведомления по одной вакансии не приходят
+- Трекер откликов с дедлайнами и статусами
+- Планировщик с запуском через systemd
+
+## Установка
 
 ```bash
 cargo build --release
 ```
 
-Бинарник появится в `target/release/JobNotifier`.
+Для SPA-сайтов дополнительно нужен Chromium:
 
----
+```bash
+sudo pacman -S chromium   # Arch Linux
+# или
+sudo apt install chromium # Debian/Ubuntu
+```
 
-## 2. Запуск тестов
+## Конфигурация
+
+`Config.toml`:
+
+```toml
+[scraping]
+urls = [
+  "https://careers.kaspersky.ru/stack/GO",
+  "https://hh.ru/search/vacancy?text=golang",
+]
+interval_minutes = 1440
+timeout_secs = 10
+keywords = ["Go", "Golang", "Rust"]
+user_agent = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36"
+
+# Для SPA-сайтов (React/Vue) — включить headless Chromium
+# use_browser = true
+# chrome_path = "/usr/bin/chromium"  # если не находит автоматически
+# browser_wait_ms = 3000             # время ожидания JS-рендеринга
+```
+
+`keywords` — обязательное поле. Без него скрейпер не вернёт ни одной вакансии.
+
+## Использование
+
+### Однократный запуск
+
+```bash
+cargo run -- run --run-once
+```
+
+### Планировщик (запускается каждые `interval_minutes` минут)
+
+```bash
+cargo run -- run
+```
+
+### Статистика и история
+
+```bash
+cargo run -- run --stats          # общая статистика
+cargo run -- run --recent 10      # последние 10 найденных вакансий
+cargo run -- run --cleanup 30     # удалить записи старше 30 дней
+```
+
+## Трекер откликов
+
+Заявки добавляются вручную — берёшь URL из уведомления скрейпера и добавляешь отклик.
+
+```bash
+# Добавить отклик
+cargo run -- add-application \
+  --company "Kaspersky" \
+  --position "Developer Go (Sandbox)" \
+  --job-url "https://careers.kaspersky.ru/vacancy/24936" \
+  --reply-days 14 \
+  --notes "Откликнулся через сайт"
+
+# Список всех откликов
+cargo run -- list-applications
+
+# Обновить статус
+cargo run -- update-status --id <UUID> --status in-review
+
+# Удалить
+cargo run -- delete-application --id <UUID>
+```
+
+Статусы: `submitted`, `in-review`, `rejected`, `offer-received`, `withdrawn`.
+
+При запуске скрейпера выводятся напоминания о заявках с дедлайном сегодня:
+
+```
+=== Deadline reminders ===
+[!] Kaspersky — Developer Go (Sandbox) (deadline: 2026-04-02)
+```
+
+## Systemd
+
+```bash
+sudo cp job-notifier.service /etc/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now job-notifier
+journalctl --user -u job-notifier -f
+```
+
+## Тесты
 
 ```bash
 cargo test
 ```
 
-Ожидаемый результат: `test result: ok. 23 passed; 0 failed`.
-
----
-
-## 3. Конфигурация
-
-Отредактируй `Config.toml`:
-
-```toml
-[scraping]
-urls = [
-  "https://hh.ru/search/vacancy?text=rust",
-]
-interval_minutes = 1440
-timeout_secs = 10
-keywords = ["rust", "Go", "backend", "разработчик"]
-user_agent = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36"
-```
-
-> Без `keywords` скрейпер не вернёт ни одной вакансии.
-> Поиск идёт по границам слова — `"Go"` найдёт `"Middle Go Backend Engineer"`,
-> но не зацепит `"Django"` или `"MongoDB"`.
-
----
-
-## 4. Однократный скрейпинг
-
-```bash
-cargo run -- run --run-once
-```
-
-Пример вывода:
+## Архитектура
 
 ```
-Found 3 new job(s):
-==================================================
-
- Job #1
-Title: Middle Go Backend Engineer
-URL: https://hh.ru/vacancy/12345678
-Grade: Middle
-Found: 2026-03-19 10:22:01 UTC
+Config.toml
+    └── urls + keywords
+            │
+            ▼
+    HttpFetcher / BrowserFetcher (headless Chrome)
+            │
+            ▼
+    extract_jobs_from_html()
+    — ищет текстовые элементы с ключевыми словами
+    — находит ближайшую ссылку (любую, без URL-паттернов)
+    — дедуплицирует по URL
+            │
+            ▼
+    SQLite (seen_jobs)  →  ConsoleNotifier
+            │
+            ▼
+    ApplicationTracker (отклики, дедлайны)
 ```
-
----
-
-## 5. Трекер заявок — полный сценарий
-
-### Добавить заявку
-
-```bash
-cargo run -- add-application \
-  --company "Яндекс" \
-  --position "Middle Go Backend Engineer" \
-  --reply-days 14 \
-  --job-url "https://hh.ru/vacancy/12345678" \
-  --notes "Откликнулся через hh.ru"
-```
-
-Вывод:
-
-```
-Application added:
-  ID:       550e8400-e29b-41d4-a716-446655440000
-  Company:  Яндекс
-  Position: Middle Go Backend Engineer
-  Applied:  2026-03-19
-  Deadline: 2026-04-02
-  Status:   Submitted
-  Job URL:  https://hh.ru/vacancy/12345678
-  Notes:    Откликнулся через hh.ru
-```
-
-Добавь ещё несколько:
-
-```bash
-cargo run -- add-application \
-  --company "Озон" \
-  --position "Senior Rust Engineer" \
-  --job-url "https://hh.ru/vacancy/99887766"
-
-cargo run -- add-application \
-  --company "Авито" \
-  --position "Backend Developer" \
-  --reply-days 7
-```
-
-### Посмотреть список
-
-```bash
-cargo run -- list-applications
-```
-
-```
-ID                                    Company  Position                    Applied     Deadline    Status         Job URL
-------------------------------------  -------  --------------------------  ----------  ----------  -------------  ---------------------------
-550e8400-e29b-41d4-a716-446655440000  Яндекс   Middle Go Backend Engineer  2026-03-19  2026-04-02  Submitted      https://hh.ru/vacancy/12345678
-...
-```
-
-### Обновить статус
-
-```bash
-cargo run -- update-status \
-  --id 550e8400-e29b-41d4-a716-446655440000 \
-  --status in-review
-```
-
-Допустимые значения: `submitted`, `in-review`, `rejected`, `offer-received`, `withdrawn`.
-
-Проверка ошибки при неверном статусе:
-
-```bash
-cargo run -- update-status \
-  --id 550e8400-e29b-41d4-a716-446655440000 \
-  --status pending
-# Error: unknown status 'pending'. Valid values: submitted, in-review, rejected, offer-received, withdrawn
-```
-
-### Удалить заявку
-
-```bash
-cargo run -- delete-application --id 550e8400-e29b-41d4-a716-446655440000
-# Application '550e8400-...' deleted.
-```
-
----
-
-## 6. Проверка уведомлений о дедлайнах
-
-Добавь заявку с `--reply-days 0` (дедлайн = сегодня):
-
-```bash
-cargo run -- add-application \
-  --company "Тест Дедлайн" \
-  --position "Rust Dev" \
-  --reply-days 0
-```
-
-Затем запусти скрейпинг:
-
-```bash
-cargo run -- run --run-once
-```
-
-В выводе появится блок:
-
-```
-=== Deadline reminders ===
-[!] Тест Дедлайн — Rust Dev (deadline: 2026-03-19)
-```
-
----
-
-## 7. Статистика и история вакансий
-
-```bash
-# Общая статистика
-cargo run -- run --stats
-
-# Последние 5 найденных вакансий
-cargo run -- run --recent 5
-
-# Удалить записи старше 30 дней
-cargo run -- run --cleanup 30
-```
-
----
-
-## 8. Фоновый режим через systemd
-
-```bash
-sudo cp job-notifier.service /etc/systemd/user/
-systemctl --user daemon-reload
-systemctl --user start job-notifier
-systemctl --user enable job-notifier
-
-# Логи в реальном времени
-journalctl --user -u job-notifier -f
-```
-
-Планировщик запускается каждые `interval_minutes` минут (по умолчанию 1440 = раз в сутки).
-
----
-
-## 9. Прямая работа с базой данных
-
-```bash
-sqlite3 job_notifier.db
-```
-
-```sql
--- Все заявки с URL вакансии
-SELECT id, company, position, status, job_url FROM applications;
-
--- Заявки с дедлайном сегодня
-SELECT * FROM applications
-WHERE date(applied_at, '+' || expected_reply_days || ' days') = date('now')
-  AND status IN ('Submitted', 'InReview');
-
--- Последние найденные вакансии
-SELECT dedup_key, seen_at FROM seen_jobs ORDER BY seen_at DESC LIMIT 10;
-```
-
----
-
-## 10. Дедупликация вакансий
-
-Каждая найденная вакансия сохраняется в `seen_jobs` с ключом `company:title:url`.
-При следующем запуске скрейпер проверяет этот ключ — уже виденные вакансии не уведомляют повторно.

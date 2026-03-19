@@ -9,7 +9,7 @@ use crate::scraper::Scraper;
 use crate::scraper::grade::detect_grade;
 
 pub struct UniversalScraper {
-    keywords: Vec<String>,
+    pub keywords: Vec<String>,
     user_agent: Option<String>,
     client: reqwest::Client,
 }
@@ -17,7 +17,13 @@ pub struct UniversalScraper {
 impl UniversalScraper {
     pub fn new(keywords: Vec<String>, user_agent: Option<String>) -> Self {
         let mut builder = reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::limited(10));
+            .redirect(reqwest::redirect::Policy::custom(|attempt| {
+                if attempt.previous().len() >= 10 {
+                    attempt.error("too many redirects")
+                } else {
+                    attempt.follow()
+                }
+            }));
         if let Some(ref ua) = user_agent {
             builder = builder.user_agent(ua.clone());
         }
@@ -25,80 +31,173 @@ impl UniversalScraper {
         Self { keywords, user_agent, client }
     }
 
+    pub fn keywords_json(&self) -> String {
+        let items: Vec<String> = self.keywords.iter()
+            .map(|k| format!("\"{}\"", k.replace('"', "\\\"")))
+            .collect();
+        format!("[{}]", items.join(","))
+    }
+
     fn extract_jobs(&self, html: &str, base_url: &str) -> Vec<Job> {
+        self.extract_jobs_from_html(html, base_url)
+    }
+
+    /// Извлекает вакансии из HTML без привязки к URL-паттернам.
+    ///
+    /// Алгоритм:
+    /// 1. Находим все "листовые" элементы с коротким текстом (потенциальные заголовки)
+    /// 2. Проверяем содержат ли они ключевое слово
+    /// 3. Ищем ближайшую ссылку: сам элемент → вложенная → родительский контейнер
+    /// 4. Принимаем любую ссылку на тот же домен (не только /vacancy/)
+    pub fn extract_jobs_from_html(&self, html: &str, base_url: &str) -> Vec<Job> {
         let document = Html::parse_document(html);
-        let div_selector = match Selector::parse("div") {
-            Ok(s) => s,
-            Err(_) => return vec![],
-        };
-        let a_selector = match Selector::parse("a[href]") {
-            Ok(s) => s,
-            Err(_) => return vec![],
-        };
 
-        let mut jobs = Vec::new();
+        let kw_patterns: Vec<Regex> = self.keywords.iter()
+            .filter_map(|kw| Regex::new(&format!(r"(?i)\b{}\b", regex::escape(kw))).ok())
+            .collect();
 
-        for element in document.select(&div_selector) {
-            let text: String = element.text().collect();
+        let base_host = Self::extract_host(base_url);
+        // Если URL страницы содержит ключевое слово — берём все ссылки без фильтрации по тексту
+        let base_url_matches = kw_patterns.iter().any(|re| re.is_match(base_url));
 
-            let matches = self.keywords.iter().any(|kw| {
-                let pattern = format!(r"(?i)\b{}\b", regex::escape(kw));
-                Regex::new(&pattern)
-                    .map(|re| re.is_match(&text))
-                    .unwrap_or(false)
-            });
-            if !matches {
-                continue;
+        let a_sel = Selector::parse("a[href]").unwrap();
+        // Листовые элементы — те что обычно содержат заголовок вакансии
+        let leaf_sel = Selector::parse(
+            "h1, h2, h3, h4, h5, h6, nobr, b, strong, p, span, a[href], li, td"
+        ).unwrap();
+        // Контейнеры — для поиска ссылки "вверх" по дереву
+        let container_sel = Selector::parse("div, section, article, li, td, tr").unwrap();
+
+        // Приоритет тега: меньше = лучше
+        fn tag_priority(tag: &str) -> u8 {
+            match tag {
+                "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => 0,
+                "nobr" | "b" | "strong" => 1,
+                "p" | "span" | "li" | "td" => 2,
+                "a" => 3,
+                _ => 4,
             }
-
-            // Первый <a href> как URL вакансии
-            let href = match element.select(&a_selector).next()
-                .and_then(|a| a.value().attr("href"))
-            {
-                Some(h) => h,
-                None => continue,
-            };
-
-            let url = Self::resolve_url(href, base_url);
-
-            // Первая непустая текстовая строка как заголовок
-            let title = element.text()
-                .map(|t| t.trim().to_string())
-                .find(|t| !t.is_empty())
-                .unwrap_or_default();
-
-            if title.is_empty() {
-                continue;
-            }
-
-            let grade = detect_grade(&title);
-
-            let job = Job {
-                id: format!(
-                    "{}-{}",
-                    Utc::now().timestamp_nanos_opt().unwrap_or(0),
-                    title.chars().take(10).collect::<String>()
-                ),
-                title,
-                company: String::new(),
-                tech_stack: vec![],
-                grade,
-                url: Url(url),
-                salary: None,
-                seen_at: Utc::now(),
-            };
-
-            jobs.push(job);
         }
 
-        jobs
+        // url -> (title, tag_priority)
+        let mut result: std::collections::HashMap<String, (String, u8)> = std::collections::HashMap::new();
+
+        for elem in document.select(&leaf_sel) {
+            let tag = elem.value().name();
+
+            // Берём прямой текст узла (без потомков) — чистый заголовок
+            let direct: String = elem.children()
+                .filter_map(|n| n.value().as_text())
+                .map(|t| t.trim())
+                .filter(|t| !t.is_empty())
+                .collect::<Vec<_>>()
+                .join(" ");
+
+            // Если прямой текст пустой — берём полный, но только короткий
+            let full: String = elem.text()
+                .map(|t| t.trim())
+                .filter(|t| !t.is_empty())
+                .collect::<Vec<_>>()
+                .join(" ");
+
+            let text = if direct.len() >= 3 {
+                direct
+            } else if full.len() >= 3 && full.len() <= 100 {
+                full
+            } else {
+                continue;
+            };
+
+            if text.starts_with("http") || text.contains('{') || text.contains('@') {
+                continue;
+            }
+
+            let text_has_kw = kw_patterns.iter().any(|re| re.is_match(&text));
+            if !base_url_matches && !text_has_kw {
+                continue;
+            }
+
+            // Ищем ссылку: 1) сам элемент, 2) вложенная <a>, 3) ближайший контейнер с <a>
+            let href: Option<String> = if tag == "a" {
+                elem.value().attr("href").map(|h| h.to_string())
+            } else {
+                // Вложенная ссылка
+                elem.select(&a_sel)
+                    .find_map(|a| a.value().attr("href").map(|h| h.to_string()))
+                    .or_else(|| {
+                        // Ищем в ближайших контейнерах-предках через обход всего документа:
+                        // находим контейнер, который содержит наш элемент и имеет ссылку
+                        document.select(&container_sel).find_map(|container| {
+                            // Контейнер должен содержать текст нашего элемента
+                            let container_text: String = container.text().collect();
+                            if !container_text.contains(&text) {
+                                return None;
+                            }
+                            // Контейнер не должен быть слишком большим (весь body)
+                            if container_text.len() > 500 {
+                                return None;
+                            }
+                            container.select(&a_sel)
+                                .find_map(|a| a.value().attr("href").map(|h| h.to_string()))
+                        })
+                    })
+            };
+
+            let href = match href {
+                Some(h) if !h.is_empty() && !h.starts_with('#') && !h.starts_with("javascript") => h,
+                _ => continue,
+            };
+
+            let url = Self::resolve_url(&href, base_url);
+            let url_host = Self::extract_host(&url);
+
+            // Только тот же домен
+            if !base_host.is_empty() && !url_host.is_empty() && url_host != base_host {
+                continue;
+            }
+
+            // Не берём ссылки на текущую страницу
+            if url.trim_end_matches('/') == base_url.trim_end_matches('/') {
+                continue;
+            }
+
+            let priority = tag_priority(tag);
+            let entry = result.entry(url).or_insert_with(|| (text.clone(), priority));
+            let entry_has_kw = kw_patterns.iter().any(|re| re.is_match(&entry.0));
+            let prefer = priority < entry.1
+                || (priority == entry.1 && !entry_has_kw && text_has_kw)
+                || (priority == entry.1 && entry_has_kw == text_has_kw && text.len() > entry.0.len());
+            if prefer {
+                *entry = (text, priority);
+            }
+        }
+
+        result.into_iter()
+            .filter(|(_, (title, _))| title.len() >= 3)
+            .map(|(url, (title, _))| {
+                let grade = detect_grade(&title);
+                Job {
+                    id: format!(
+                        "{}-{}",
+                        Utc::now().timestamp_nanos_opt().unwrap_or(0),
+                        title.chars().take(10).collect::<String>()
+                    ),
+                    title,
+                    company: String::new(),
+                    tech_stack: vec![],
+                    grade,
+                    url: Url(url),
+                    salary: None,
+                    seen_at: Utc::now(),
+                }
+            })
+            .collect()
     }
 
     fn resolve_url(href: &str, base_url: &str) -> String {
         if href.contains("://") {
             href.to_string()
         } else {
-            // Извлекаем origin из base_url
             let origin = if let Some(pos) = base_url.find("://") {
                 let after_scheme = &base_url[pos + 3..];
                 let end = after_scheme.find('/').unwrap_or(after_scheme.len());
@@ -107,6 +206,20 @@ impl UniversalScraper {
                 base_url.trim_end_matches('/')
             };
             format!("{}{}", origin, if href.starts_with('/') { href.to_string() } else { format!("/{}", href) })
+        }
+    }
+
+    fn extract_host(url: &str) -> String {
+        Self::extract_host_pub(url)
+    }
+
+    pub fn extract_host_pub(url: &str) -> String {
+        if let Some(pos) = url.find("://") {
+            let after_scheme = &url[pos + 3..];
+            let end = after_scheme.find('/').unwrap_or(after_scheme.len());
+            after_scheme[..end].to_string()
+        } else {
+            String::new()
         }
     }
 }
@@ -120,12 +233,14 @@ impl Scraper for UniversalScraper {
             .await
             .map_err(|e| ScraperError::Network { url: url.to_string(), source: e })?;
 
+        // Follow redirect manually if the client stopped (e.g. cross-origin __rr redirects)
+        let final_url = response.url().to_string();
         let html = response
             .text()
             .await
             .map_err(|e| ScraperError::Network { url: url.to_string(), source: e })?;
 
-        Ok(self.extract_jobs(&html, url))
+        Ok(self.extract_jobs(&html, &final_url))
     }
 
     fn name(&self) -> &str {
@@ -163,8 +278,8 @@ mod tests {
     fn test_extract_jobs_with_matches() {
         let scraper = make_scraper(vec!["rust"]);
         let html = r#"<html><body>
-            <div>Rust Developer <a href="/job/42">Apply</a></div>
-            <div>Python Developer <a href="/job/43">Apply</a></div>
+            <div><a href="/job/42">Rust Developer</a></div>
+            <div><a href="/job/43">Python Developer</a></div>
         </body></html>"#;
         let jobs = scraper.extract_jobs(html, "https://example.com");
         assert_eq!(jobs.len(), 1);
@@ -172,22 +287,22 @@ mod tests {
         assert!(jobs[0].url.0.starts_with("https://example.com"));
     }
 
-    // 10.6 Property P1: фильтрация div по ключевым словам
-    // Feature: job-notifier-enhanced, Property 1: все Job происходят из div-элементов, содержащих хотя бы одно ключевое слово
+    // 10.6 Property P1: фильтрация элементов по ключевым словам
+    // Feature: job-notifier-enhanced, Property 1: все Job происходят из элементов, содержащих хотя бы одно ключевое слово
     proptest! {
         #[test]
         fn prop_p1_filter_divs_by_keywords(
             keyword in "[a-z]{4,8}",
         ) {
-            // div с ключевым словом как отдельное слово — должен совпасть
+            // элемент с ключевым словом как отдельное слово — должен совпасть
             let html_match = format!(
-                r#"<html><body><div>{} developer <a href="/job/1">Link</a></div></body></html>"#,
+                r#"<html><body><h3><a href="/job/1">{} developer</a></h3></body></html>"#,
                 keyword
             );
-            // div где keyword является подстрокой другого слова — не должен совпасть
+            // элемент где keyword является подстрокой другого слова — не должен совпасть
             let non_match_word = format!("{}xyz", keyword);
             let html_no_match = format!(
-                r#"<html><body><div>{} <a href="/job/2">Link</a></div></body></html>"#,
+                r#"<html><body><h3><a href="/job/2">{}</a></h3></body></html>"#,
                 non_match_word
             );
 
@@ -201,17 +316,18 @@ mod tests {
         }
     }
 
-    // 10.7 Property P2: извлечение полей из совпадающего div
+    // 10.7 Property P2: извлечение полей из совпадающего элемента
     // Feature: job-notifier-enhanced, Property 2: извлечённый Job имеет непустой title и url начинающийся с http
     proptest! {
         #[test]
         fn prop_p2_extracted_job_has_title_and_url(
             keyword in "[a-z]{3,8}",
             title_prefix in "[A-Za-z ]{1,10}",
-            path in "/[a-z]{1,10}",
+            path in "/job/[a-z]{1,10}",
         ) {
+            // ключевое слово в тексте span, ссылка рядом
             let html = format!(
-                r#"<html><body><div>{} {} <a href="{}">Link</a></div></body></html>"#,
+                r#"<html><body><div><span>{} {}</span><a href="{}">Apply</a></div></body></html>"#,
                 title_prefix, keyword, path
             );
             let scraper = make_scraper(vec![&keyword]);

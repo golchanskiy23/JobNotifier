@@ -10,6 +10,12 @@ pub enum ScraperError {
         source: reqwest::Error,
     },
 
+    #[error("browser error for {url}: {message}")]
+    Browser {
+        url: String,
+        message: String,
+    },
+
     #[error("parse failed: {0}")]
     Parse(String),
 

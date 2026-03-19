@@ -8,7 +8,12 @@ use tokio::time::{interval_at, Instant, sleep};
 use chrono::Timelike;
 
 pub struct JobScheduler {
-    scrapers: Vec<Box<dyn Scraper>>,
+    /// Скрейпер по умолчанию (HTTP)
+    default_scraper: Box<dyn Scraper>,
+    /// Браузерный скрейпер (headless Chromium), опциональный
+    browser_scraper: Option<Box<dyn Scraper>>,
+    /// URL которые нужно скрейпить через браузер
+    browser_urls: Vec<String>,
     notifiers: Vec<Box<dyn Notifier>>,
     storage: Box<dyn Storage>,
     filter: Box<dyn Filter>,
@@ -16,13 +21,17 @@ pub struct JobScheduler {
 
 impl JobScheduler {
     pub fn new(
-        scrapers: Vec<Box<dyn Scraper>>,
+        default_scraper: Box<dyn Scraper>,
+        browser_scraper: Option<Box<dyn Scraper>>,
+        browser_urls: Vec<String>,
         notifiers: Vec<Box<dyn Notifier>>,
         storage: Box<dyn Storage>,
         filter: Box<dyn Filter>,
     ) -> Self {
         Self {
-            scrapers,
+            default_scraper,
+            browser_scraper,
+            browser_urls,
             notifiers,
             storage,
             filter,
@@ -105,25 +114,37 @@ impl JobScheduler {
     
     async fn scrape_all_urls(&self, urls: &[String]) -> Result<Vec<Job>> {
         let mut all_jobs = Vec::new();
-        
-        for scraper in &self.scrapers {
-            for url in urls {
-                println!("Scraping {} with {}", scraper.name(), url);
-                
-                match scraper.scrape(url).await {
-                    Ok(jobs) => {
-                        println!("Found {} jobs from {}", jobs.len(), scraper.name());
-                        all_jobs.extend(jobs);
-                    }
-                    Err(e) => {
-                        eprintln!("Error scraping {}: {}", url, e);
-                    }
+
+        for url in urls {
+            let use_browser = !self.browser_urls.is_empty()
+                && self.browser_urls.iter().any(|b| url == b || url.starts_with(b.trim_end_matches('/')));
+
+            let scraper: &dyn Scraper = if use_browser {
+                if let Some(ref bs) = self.browser_scraper {
+                    println!("Scraping browser with {}", url);
+                    bs.as_ref()
+                } else {
+                    println!("Scraping {} with {}", self.default_scraper.name(), url);
+                    self.default_scraper.as_ref()
                 }
-                
-                sleep(Duration::from_millis(500)).await;
+            } else {
+                println!("Scraping {} with {}", self.default_scraper.name(), url);
+                self.default_scraper.as_ref()
+            };
+
+            match scraper.scrape(url).await {
+                Ok(jobs) => {
+                    println!("Found {} jobs from {}", jobs.len(), scraper.name());
+                    all_jobs.extend(jobs);
+                }
+                Err(e) => {
+                    eprintln!("Error scraping {}: {}", url, e);
+                }
             }
+
+            sleep(Duration::from_millis(500)).await;
         }
-        
+
         Ok(all_jobs)
     }
     
