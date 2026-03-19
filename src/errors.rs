@@ -53,6 +53,9 @@ pub enum StorageError {
     
     #[error("failed to load jobs: {0}")]
     Load(String),
+
+    #[error("record not found: {0}")]
+    NotFound(String),
 }
 
 

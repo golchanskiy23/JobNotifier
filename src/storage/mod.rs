@@ -1,4 +1,4 @@
-use crate::domain::Job;
+use crate::domain::{Job, Application, ApplicationStatus};
 use crate::errors::StorageError;
 use async_trait::async_trait;
 
@@ -13,6 +13,16 @@ pub trait Storage: Send + Sync {
     async fn cleanup_old_jobs(&self, days_old: i64) -> Result<u64, StorageError>;
     
     async fn get_stats(&self) -> Result<JobStats, StorageError>;
+
+    async fn add_application(&self, app: &Application) -> Result<(), StorageError>;
+
+    async fn list_applications(&self) -> Result<Vec<Application>, StorageError>;
+
+    async fn update_application_status(&self, id: &str, status: &ApplicationStatus) -> Result<(), StorageError>;
+
+    async fn delete_application(&self, id: &str) -> Result<(), StorageError>;
+
+    async fn get_deadline_applications(&self) -> Result<Vec<Application>, StorageError>;
 }
 
 #[derive(Debug)]

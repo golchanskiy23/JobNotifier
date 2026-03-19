@@ -1,8 +1,9 @@
 use async_trait::async_trait;
 use scraper::{Html, Selector};
-use crate::domain::{Job, JobGrade, SalaryRange, Url};
+use crate::domain::{Job, SalaryRange, Url};
 use crate::errors::ScraperError;
 use crate::scraper::Scraper;
+use crate::scraper::grade::detect_grade;
 use chrono::Utc;
 
 /// Скрейпер для HeadHunter (hh.ru)
@@ -100,7 +101,7 @@ impl HhScraper {
                 format!("{}{}", base_url.trim_end_matches('/'), href)
             };
             
-            let grade = self.detect_grade(&title);
+            let grade = detect_grade(&title);
             
             let job = Job {
                 id: format!("{}-{}", 
@@ -154,22 +155,4 @@ impl HhScraper {
         }
     }
     
-    /// Определяет грейд из названия вакансии
-    fn detect_grade(&self, title: &str) -> Option<JobGrade> {
-        let title_lower = title.to_lowercase();
-        
-        if title_lower.contains("intern") || title_lower.contains("стажер") {
-            Some(JobGrade::Intern)
-        } else if title_lower.contains("junior") || title_lower.contains("младший") {
-            Some(JobGrade::Junior)
-        } else if title_lower.contains("middle") || title_lower.contains("middle") {
-            Some(JobGrade::Middle)
-        } else if title_lower.contains("senior") || title_lower.contains("старший") {
-            Some(JobGrade::Senior)
-        } else if title_lower.contains("lead") || title_lower.contains("ведущий") {
-            Some(JobGrade::Lead)
-        } else {
-            None
-        }
-    }
 }

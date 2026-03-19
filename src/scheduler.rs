@@ -5,9 +5,7 @@ use crate::storage::Storage;
 use anyhow::{Context, Result};
 use std::time::Duration;
 use tokio::time::{interval_at, Instant, sleep};
-use tokio::signal;
-use tokio_util::sync::CancellationToken;
-use chrono::{Local, Timelike};
+use chrono::Timelike;
 
 pub struct JobScheduler {
     scrapers: Vec<Box<dyn Scraper>>,
@@ -53,7 +51,22 @@ impl JobScheduler {
         }
         
         self.show_stats().await?;
-        
+
+        // Check deadline applications
+        match self.storage.get_deadline_applications().await {
+            Ok(apps) if !apps.is_empty() => {
+                for notifier in &self.notifiers {
+                    if let Err(e) = notifier.notify_deadlines(&apps).await {
+                        eprintln!("Error sending deadline notifications: {}", e);
+                    }
+                }
+            }
+            Ok(_) => {}
+            Err(e) => {
+                eprintln!("Error checking deadline applications: {}", e);
+            }
+        }
+
         println!("Job search completed");
         Ok(())
     }

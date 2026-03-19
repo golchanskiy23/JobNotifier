@@ -8,6 +8,10 @@ pub struct ScrapingConfig {
     pub urls: Vec<String>,
     pub interval_minutes: u64,
     pub timeout_secs: u64,
+    #[serde(default)]
+    pub keywords: Vec<String>,
+    #[serde(default)]
+    pub user_agent: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -59,3 +63,50 @@ impl AppConfig {
 }
 
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    // 10.2 Unit-тест: AppConfig без поля keywords → keywords == []
+    #[test]
+    fn test_config_without_keywords_defaults_to_empty() {
+        let toml_str = r#"
+[scraping]
+urls = ["https://example.com"]
+interval_minutes = 60
+timeout_secs = 10
+"#;
+        let cfg: AppConfig = toml::from_str(toml_str).expect("should parse");
+        assert!(cfg.scraping.keywords.is_empty());
+    }
+
+    // 10.10 Property P5: десериализация keywords из TOML
+    // Feature: job-notifier-enhanced, Property 5: AppConfig десериализует keywords без потерь
+    proptest! {
+        #[test]
+        fn prop_p5_keywords_deserialization(
+            keywords in prop::collection::vec("[a-zA-Z]{1,10}", 0..10),
+        ) {
+            let kw_toml = keywords.iter()
+                .map(|k| format!("\"{}\"", k))
+                .collect::<Vec<_>>()
+                .join(", ");
+
+            let toml_str = format!(
+                r#"
+[scraping]
+urls = ["https://example.com"]
+interval_minutes = 60
+timeout_secs = 10
+keywords = [{}]
+"#,
+                kw_toml
+            );
+
+            let cfg: AppConfig = toml::from_str(&toml_str).expect("should parse");
+            prop_assert_eq!(cfg.scraping.keywords, keywords);
+        }
+    }
+}
