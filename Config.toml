@@ -1,5 +1,7 @@
 [scraping]
 urls = [
+    "https://yandex.ru/jobs/vacancies?professions=backend-developer&skills=74",
+    "https://www.tbank.ru/career/vacancies/it/?grade=junior&tcareer_it_experience=tcareer-it-experience-junior&tcareer_it_experience=tcareer-it-experience-middle&tcareer_it_experience=tcareer-it-experience-senior&tcareer_it_experience=tcareer-it-experience-head&tcareer_it_specialization=golang",
     "https://yandex.ru/yaintern/backend",
     "https://sberstudent.ru/internship/",
     "https://alfabank.ru/alfafuture/ichoosealfa/vacancies/",

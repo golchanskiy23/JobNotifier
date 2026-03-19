@@ -57,8 +57,6 @@ impl UniversalScraper {
             .collect();
 
         let base_host = Self::extract_host(base_url);
-        // Если URL страницы содержит ключевое слово — берём все ссылки без фильтрации по тексту
-        let base_url_matches = kw_patterns.iter().any(|re| re.is_match(base_url));
 
         let a_sel = Selector::parse("a[href]").unwrap();
         // Листовые элементы — те что обычно содержат заголовок вакансии
@@ -113,7 +111,7 @@ impl UniversalScraper {
             }
 
             let text_has_kw = kw_patterns.iter().any(|re| re.is_match(&text));
-            if !base_url_matches && !text_has_kw {
+            if !text_has_kw {
                 continue;
             }
 
@@ -163,10 +161,8 @@ impl UniversalScraper {
 
             let priority = tag_priority(tag);
             let entry = result.entry(url).or_insert_with(|| (text.clone(), priority));
-            let entry_has_kw = kw_patterns.iter().any(|re| re.is_match(&entry.0));
             let prefer = priority < entry.1
-                || (priority == entry.1 && !entry_has_kw && text_has_kw)
-                || (priority == entry.1 && entry_has_kw == text_has_kw && text.len() > entry.0.len());
+                || (priority == entry.1 && text.len() > entry.0.len());
             if prefer {
                 *entry = (text, priority);
             }
