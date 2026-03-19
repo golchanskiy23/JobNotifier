@@ -42,6 +42,39 @@ impl ScrapingConfig {
 #[derive(Debug, Deserialize)]
 pub struct AppConfig {
     pub scraping: ScrapingConfig,
+    /// Маппинг домен → название компании (например "careers.kaspersky.ru" = "Kaspersky")
+    #[serde(default)]
+    pub companies: std::collections::HashMap<String, String>,
+}
+
+impl AppConfig {
+    /// Возвращает название компании по URL вакансии
+    pub fn company_for_url(&self, url: &str) -> String {
+        let host = if let Some(pos) = url.find("://") {
+            let after = &url[pos + 3..];
+            let end = after.find('/').unwrap_or(after.len());
+            after[..end].to_string()
+        } else {
+            return String::new();
+        };
+        // Точное совпадение
+        if let Some(name) = self.companies.get(&host) {
+            return name.clone();
+        }
+        // Совпадение по суффиксу домена (например "kaspersky.ru" матчит "careers.kaspersky.ru")
+        for (domain, name) in &self.companies {
+            if host.ends_with(domain) {
+                return name.clone();
+            }
+        }
+        // Fallback: второй уровень домена (kaspersky из careers.kaspersky.ru)
+        let parts: Vec<&str> = host.split('.').collect();
+        if parts.len() >= 2 {
+            parts[parts.len() - 2].to_string()
+        } else {
+            host
+        }
+    }
 }
 
 #[derive(Debug, Error)]

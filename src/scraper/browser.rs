@@ -2,13 +2,11 @@ use async_trait::async_trait;
 use chromiumoxide::Browser;
 use chromiumoxide::browser::BrowserConfig;
 use futures::StreamExt;
-use chrono::Utc;
 
 use crate::domain::{Job, Url};
 use crate::errors::ScraperError;
 use crate::scraper::Scraper;
 use crate::scraper::universal::UniversalScraper;
-use crate::scraper::grade::detect_grade;
 
 pub struct BrowserScraper {
     inner: UniversalScraper,
@@ -22,9 +20,10 @@ impl BrowserScraper {
         user_agent: Option<String>,
         chrome_path: Option<String>,
         wait_ms: Option<u64>,
+        companies: std::collections::HashMap<String, String>,
     ) -> Self {
         Self {
-            inner: UniversalScraper::new(keywords, user_agent),
+            inner: UniversalScraper::new(keywords, user_agent, companies),
             chrome_path,
             wait_ms: wait_ms.unwrap_or(3000),
         }
@@ -63,16 +62,12 @@ impl BrowserScraper {
             } else {
                 url
             };
-            let grade = detect_grade(&title);
+            let company = self.inner.company_for_url(&abs_url);
             jobs.push(Job {
-                id: format!("{}-{}", Utc::now().timestamp_nanos_opt().unwrap_or(0), title.chars().take(10).collect::<String>()),
+                id: abs_url.clone(),
                 title,
-                company: String::new(),
-                tech_stack: vec![],
-                grade,
+                company,
                 url: Url(abs_url),
-                salary: None,
-                seen_at: Utc::now(),
             });
         }
         Ok(jobs)

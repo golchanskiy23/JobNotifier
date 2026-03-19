@@ -1,7 +1,6 @@
 mod config;
 mod domain;
 mod scraper;
-mod filter;
 mod notifier;
 mod storage;
 mod scheduler;
@@ -170,6 +169,7 @@ async fn run_main(args: RunArgs) -> Result<()> {
             cfg.scraping.user_agent.clone(),
             cfg.scraping.chrome_path.clone(),
             cfg.scraping.browser_wait_ms,
+            cfg.companies.clone(),
         )))
     } else {
         None
@@ -178,6 +178,7 @@ async fn run_main(args: RunArgs) -> Result<()> {
     let default_scraper: Box<dyn Scraper> = Box::new(crate::scraper::UniversalScraper::new(
         cfg.scraping.keywords.clone(),
         cfg.scraping.user_agent.clone(),
+        cfg.companies.clone(),
     ));
 
     let browser_urls = if cfg.scraping.browser_urls.is_empty() && cfg.scraping.use_browser {
@@ -344,16 +345,6 @@ async fn show_recent_jobs(storage: &Box<dyn Storage>, limit: usize) -> Result<()
         println!("Company: {}", job.company);
         println!("Title: {}", job.title);
         println!("URL: {}", job.url);
-        if let Some(grade) = &job.grade {
-            println!("Grade: {:?}", grade);
-        }
-        if !job.tech_stack.is_empty() {
-            println!("Tech Stack: {}", job.tech_stack.join(", "));
-        }
-        if let Some(salary) = &job.salary {
-            println!("Salary: {}", salary);
-        }
-        println!("Found: {}", job.seen_at.format("%Y-%m-%d %H:%M:%S UTC"));
         println!();
     }
 

@@ -12,9 +12,7 @@ pub trait Scraper: Send + Sync {
     fn name(&self) -> &str;
 }
 
-pub mod hh;
 pub mod universal;
-pub mod grade;
 pub mod browser;
 
 pub use universal::UniversalScraper;

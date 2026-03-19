@@ -1,21 +1,24 @@
 use async_trait::async_trait;
 use scraper::{Html, Selector};
-use chrono::Utc;
 use regex::Regex;
 
 use crate::domain::{Job, Url};
 use crate::errors::ScraperError;
 use crate::scraper::Scraper;
-use crate::scraper::grade::detect_grade;
 
 pub struct UniversalScraper {
     pub keywords: Vec<String>,
     user_agent: Option<String>,
     client: reqwest::Client,
+    companies: std::collections::HashMap<String, String>,
 }
 
 impl UniversalScraper {
-    pub fn new(keywords: Vec<String>, user_agent: Option<String>) -> Self {
+    pub fn new(
+        keywords: Vec<String>,
+        user_agent: Option<String>,
+        companies: std::collections::HashMap<String, String>,
+    ) -> Self {
         let mut builder = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::custom(|attempt| {
                 if attempt.previous().len() >= 10 {
@@ -28,14 +31,34 @@ impl UniversalScraper {
             builder = builder.user_agent(ua.clone());
         }
         let client = builder.build().unwrap_or_default();
-        Self { keywords, user_agent, client }
+        Self { keywords, user_agent, client, companies }
     }
 
-    pub fn keywords_json(&self) -> String {
-        let items: Vec<String> = self.keywords.iter()
+    pub fn keywords_json(&self) -> String {        let items: Vec<String> = self.keywords.iter()
             .map(|k| format!("\"{}\"", k.replace('"', "\\\"")))
             .collect();
         format!("[{}]", items.join(","))
+    }
+
+    pub fn company_for_url(&self, url: &str) -> String {
+        let host = Self::extract_host_pub(url);
+        if let Some(name) = self.companies.get(&host) {
+            return name.clone();
+        }
+        for (domain, name) in &self.companies {
+            if host.ends_with(domain.as_str()) {
+                return name.clone();
+            }
+        }
+        // Fallback: второй уровень домена (например "kaspersky" из "careers.kaspersky.ru")
+        let parts: Vec<&str> = host.split('.').collect();
+        if parts.len() >= 2 {
+            let mut s = parts[parts.len() - 2].to_string();
+            if let Some(c) = s.get_mut(0..1) { c.make_ascii_uppercase(); }
+            s
+        } else {
+            host
+        }
     }
 
     fn extract_jobs(&self, html: &str, base_url: &str) -> Vec<Job> {
@@ -171,20 +194,12 @@ impl UniversalScraper {
         result.into_iter()
             .filter(|(_, (title, _))| title.len() >= 3)
             .map(|(url, (title, _))| {
-                let grade = detect_grade(&title);
+                let company = self.company_for_url(&url);
                 Job {
-                    id: format!(
-                        "{}-{}",
-                        Utc::now().timestamp_nanos_opt().unwrap_or(0),
-                        title.chars().take(10).collect::<String>()
-                    ),
+                    id: url.clone(),
                     title,
-                    company: String::new(),
-                    tech_stack: vec![],
-                    grade,
+                    company,
                     url: Url(url),
-                    salary: None,
-                    seen_at: Utc::now(),
                 }
             })
             .collect()

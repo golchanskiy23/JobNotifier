@@ -1,7 +1,5 @@
 use sqlx::{sqlite::SqlitePool, Sqlite, Pool};
-use chrono::Utc;
-use serde_json;
-use crate::domain::{Job, Application, ApplicationStatus};
+use crate::domain::{Job, Url, Application, ApplicationStatus};
 use crate::errors::StorageError;
 use crate::storage::{Storage, JobStats};
 use async_trait::async_trait;
@@ -49,62 +47,49 @@ impl Storage for SqliteStorage {
     
     async fn mark_job_seen(&self, job: &Job) -> Result<(), StorageError> {
         let dedup_key = job.dedup_key();
-        let job_json = serde_json::to_string(job)
-            .map_err(|e| StorageError::Serialization(format!("Failed to serialize job: {}", e)))?;
-        
+
         sqlx::query(
-            "INSERT OR IGNORE INTO seen_jobs (dedup_key, job_data, seen_at) VALUES (?, ?, ?)"
+            "INSERT OR IGNORE INTO seen_jobs (dedup_key, title, company, url) VALUES (?, ?, ?, ?)"
         )
         .bind(&dedup_key)
-        .bind(&job_json)
-        .bind(job.seen_at)
+        .bind(&job.title)
+        .bind(&job.company)
+        .bind(&job.url.0)
         .execute(&self.pool)
         .await
         .map_err(|e| StorageError::Insert(format!("Failed to mark job as seen: {}", e)))?;
-        
+
         Ok(())
     }
-    
+
     async fn get_seen_jobs(&self, limit: Option<i64>) -> Result<Vec<Job>, StorageError> {
-        let rows = if let Some(limit) = limit {
-            sqlx::query_as::<_, (String,)>(
-                "SELECT job_data FROM seen_jobs ORDER BY seen_at DESC LIMIT ?"
+        let rows: Vec<(String, String, String, String)> = if let Some(limit) = limit {
+            sqlx::query_as(
+                "SELECT dedup_key, title, company, url FROM seen_jobs ORDER BY id DESC LIMIT ?"
             )
             .bind(limit)
             .fetch_all(&self.pool)
             .await
             .map_err(|e| StorageError::Query(format!("Failed to get seen jobs: {}", e)))?
         } else {
-            sqlx::query_as::<_, (String,)>(
-                "SELECT job_data FROM seen_jobs ORDER BY seen_at DESC"
+            sqlx::query_as(
+                "SELECT dedup_key, title, company, url FROM seen_jobs ORDER BY id DESC"
             )
             .fetch_all(&self.pool)
             .await
             .map_err(|e| StorageError::Query(format!("Failed to get seen jobs: {}", e)))?
         };
-        
-        let mut jobs = Vec::new();
-        for (job_json,) in rows {
-            let job: Job = serde_json::from_str(&job_json)
-                .map_err(|e| StorageError::Deserialization(format!("Failed to deserialize job: {}", e)))?;
-            jobs.push(job);
-        }
-        
-        Ok(jobs)
+
+        Ok(rows.into_iter().map(|(id, title, company, url)| Job {
+            id,
+            title,
+            company,
+            url: Url(url),
+        }).collect())
     }
     
-    async fn cleanup_old_jobs(&self, days_old: i64) -> Result<u64, StorageError> {
-        let cutoff_date = Utc::now() - chrono::Duration::days(days_old);
-        
-        let result = sqlx::query(
-            "DELETE FROM seen_jobs WHERE seen_at < ?"
-        )
-        .bind(cutoff_date)
-        .execute(&self.pool)
-        .await
-        .map_err(|e| StorageError::Delete(format!("Failed to cleanup old jobs: {}", e)))?;
-        
-        Ok(result.rows_affected())
+    async fn cleanup_old_jobs(&self, _days_old: i64) -> Result<u64, StorageError> {
+        Ok(0)
     }
     
     async fn get_stats(&self) -> Result<JobStats, StorageError> {
@@ -114,19 +99,10 @@ impl Storage for SqliteStorage {
         .fetch_one(&self.pool)
         .await
         .map_err(|e| StorageError::Query(format!("Failed to get stats: {}", e)))?;
-        
-        let last_24h = Utc::now() - chrono::Duration::hours(24);
-        let recent_jobs = sqlx::query_scalar::<_, i64>(
-            "SELECT COUNT(*) FROM seen_jobs WHERE seen_at > ?"
-        )
-        .bind(last_24h)
-        .fetch_one(&self.pool)
-        .await
-        .map_err(|e| StorageError::Query(format!("Failed to get stats: {}", e)))?;
-        
+
         Ok(JobStats {
             total_seen: total_jobs as u64,
-            last_24h: recent_jobs as u64,
+            last_24h: 0,
         })
     }
 
@@ -258,25 +234,18 @@ mod migrations {
             CREATE TABLE IF NOT EXISTS seen_jobs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 dedup_key TEXT UNIQUE NOT NULL,
-                job_data TEXT NOT NULL,
-                seen_at DATETIME NOT NULL,
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                title TEXT NOT NULL DEFAULT '',
+                company TEXT NOT NULL DEFAULT '',
+                url TEXT NOT NULL DEFAULT ''
             )
             "#
         )
         .execute(pool)
         .await
         .map_err(|e| crate::errors::StorageError::Migration(format!("Failed to create table: {}", e)))?;
-        
+
         sqlx::query(
             "CREATE INDEX IF NOT EXISTS idx_seen_jobs_dedup_key ON seen_jobs(dedup_key)"
-        )
-        .execute(pool)
-        .await
-        .map_err(|e| crate::errors::StorageError::Migration(format!("Failed to create index: {}", e)))?;
-        
-        sqlx::query(
-            "CREATE INDEX IF NOT EXISTS idx_seen_jobs_seen_at ON seen_jobs(seen_at DESC)"
         )
         .execute(pool)
         .await

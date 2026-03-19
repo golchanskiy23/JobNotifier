@@ -2,9 +2,7 @@ use async_trait::async_trait;
 use crate::domain::Job;
 use crate::domain::application::Application;
 use crate::errors::NotifierError;
-use crate::notifier::Notifier;
-
-pub struct ConsoleNotifier;
+use crate::notifier::Notifier;pub struct ConsoleNotifier;
 
 #[async_trait]
 impl Notifier for ConsoleNotifier {
@@ -22,20 +20,6 @@ impl Notifier for ConsoleNotifier {
             println!("Company: {}", job.company);
             println!("Title: {}", job.title);
             println!("URL: {}", job.url);
-            
-            if let Some(ref grade) = job.grade {
-                println!("Grade: {}", grade);
-            }
-            
-            if !job.tech_stack.is_empty() {
-                println!("Tech Stack: {}", job.tech_stack.join(", "));
-            }
-            
-            if let Some(ref salary) = job.salary {
-                println!("Salary: {}", salary);
-            }
-            
-            println!("Found: {}", job.seen_at.format("%Y-%m-%d %H:%M:%S UTC"));
         }
         
         println!("\n{}", "=".repeat(50));
@@ -60,19 +44,14 @@ mod tests {
     use super::*;
     use crate::domain::application::{Application, ApplicationStatus};
     use crate::domain::{Job, Url};
-    use chrono::Utc;
     use proptest::prelude::*;
 
     fn make_job(title: &str, url: &str) -> Job {
         Job {
-            id: "test-id".to_string(),
+            id: url.to_string(),
             title: title.to_string(),
             company: "TestCo".to_string(),
-            tech_stack: vec![],
-            grade: None,
             url: Url(url.to_string()),
-            salary: None,
-            seen_at: Utc::now(),
         }
     }
 
