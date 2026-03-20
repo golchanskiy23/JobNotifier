@@ -163,11 +163,15 @@ async fn run_main(args: RunArgs) -> Result<()> {
 
     cfg.validate().context("config validation failed")?;
 
+    // chrome_path: Config.toml → переменная окружения CHROME_PATH → автопоиск
+    let chrome_path = cfg.scraping.chrome_path.clone()
+        .or_else(|| std::env::var("CHROME_PATH").ok());
+
     let browser_scraper: Option<Box<dyn Scraper>> = if cfg.scraping.use_browser || !cfg.scraping.browser_urls.is_empty() {
         Some(Box::new(crate::scraper::BrowserScraper::new(
             cfg.scraping.keywords.clone(),
             cfg.scraping.user_agent.clone(),
-            cfg.scraping.chrome_path.clone(),
+            chrome_path,
             cfg.scraping.browser_wait_ms,
             cfg.companies.clone(),
         )))
@@ -175,10 +179,11 @@ async fn run_main(args: RunArgs) -> Result<()> {
         None
     };
 
-    let default_scraper: Box<dyn Scraper> = Box::new(crate::scraper::UniversalScraper::new(
+    let default_scraper: Box<dyn Scraper> = Box::new(crate::scraper::UniversalScraper::new_with_timeout(
         cfg.scraping.keywords.clone(),
         cfg.scraping.user_agent.clone(),
         cfg.companies.clone(),
+        cfg.scraping.timeout_secs,
     ));
 
     let browser_urls = if cfg.scraping.browser_urls.is_empty() && cfg.scraping.use_browser {

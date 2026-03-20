@@ -67,12 +67,15 @@ browser_wait_ms = 5000               # время ожидания JS-ренде
 
 ```bash
 cargo run -- run --run-once
+# Docker:
+docker compose exec job-notifier ./JobNotifier run --run-once
 ```
 
 ### Планировщик
 
 ```bash
 cargo run -- run
+# Docker: планировщик запускается автоматически при docker compose up
 ```
 
 ### История и статистика
@@ -80,6 +83,9 @@ cargo run -- run
 ```bash
 cargo run -- run --stats        # общая статистика
 cargo run -- run --recent 20    # последние 20 найденных вакансий
+# Docker:
+docker compose exec job-notifier ./JobNotifier run --stats
+docker compose exec job-notifier ./JobNotifier run --recent 20
 ```
 
 ## Трекер откликов
@@ -91,15 +97,27 @@ cargo run -- add-application \
   --position "Developer Go (Sandbox)" \
   --job-url "https://careers.kaspersky.ru/vacancy/24936" \
   --reply-days 14
+# Docker:
+docker compose exec job-notifier ./JobNotifier add-application \
+  --company "Kaspersky" \
+  --position "Developer Go (Sandbox)" \
+  --job-url "https://careers.kaspersky.ru/vacancy/24936" \
+  --reply-days 14
 
 # Список откликов
 cargo run -- list-applications
+# Docker:
+docker compose exec job-notifier ./JobNotifier list-applications
 
 # Обновить статус
 cargo run -- update-status --id <UUID> --status in-review
+# Docker:
+docker compose exec job-notifier ./JobNotifier update-status --id <UUID> --status in-review
 
 # Удалить
 cargo run -- delete-application --id <UUID>
+# Docker:
+docker compose exec job-notifier ./JobNotifier delete-application --id <UUID>
 ```
 
 Статусы: `submitted`, `in-review`, `rejected`, `offer-received`, `withdrawn`.
@@ -117,13 +135,37 @@ cargo run -- delete-application --id <UUID>
 
 ```bash
 sqlite3 job_notifier.db "SELECT title, company, url FROM seen_jobs ORDER BY id DESC LIMIT 50;"
+# Docker:
+docker compose exec job-notifier sqlite3 job_notifier.db "SELECT title, company, url FROM seen_jobs ORDER BY id DESC LIMIT 50;"
 ```
 
 Очистить:
 
 ```bash
 sqlite3 job_notifier.db "DELETE FROM seen_jobs;"
+# Docker:
+docker compose exec job-notifier sqlite3 job_notifier.db "DELETE FROM seen_jobs;"
 ```
+
+## Docker
+
+```bash
+# Собрать и запустить планировщик в фоне
+docker compose up -d --build
+
+# Логи (Ctrl+C отсоединяет от вывода, контейнер продолжает работать)
+docker compose logs -f
+
+# Остановить
+docker compose down
+```
+
+`Config.toml` монтируется из корня репозитория как read-only — отредактируй его перед запуском:
+- `urls` / `browser_urls` — список сайтов
+- `interval_minutes` — интервал прогона
+- `keywords` — ключевые слова фильтрации
+
+Chromium уже включён в образ, `chrome_path` в конфиге указывать не нужно.
 
 ## Systemd
 

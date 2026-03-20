@@ -1,0 +1,10 @@
+services:
+  job-notifier:
+    build: .
+    restart: unless-stopped
+    volumes:
+      - ./Config.toml:/app/Config.toml:ro
+      - ./job_notifier.db:/app/job_notifier.db
+    environment:
+      - CHROME_PATH=/usr/bin/chromium
+    # Логи вакансий: docker compose logs -f

@@ -19,7 +19,18 @@ impl UniversalScraper {
         user_agent: Option<String>,
         companies: std::collections::HashMap<String, String>,
     ) -> Self {
+        Self::new_with_timeout(keywords, user_agent, companies, 30)
+    }
+
+    pub fn new_with_timeout(
+        keywords: Vec<String>,
+        user_agent: Option<String>,
+        companies: std::collections::HashMap<String, String>,
+        timeout_secs: u64,
+    ) -> Self {
         let mut builder = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(timeout_secs))
+            .connect_timeout(std::time::Duration::from_secs(10))
             .redirect(reqwest::redirect::Policy::custom(|attempt| {
                 if attempt.previous().len() >= 10 {
                     attempt.error("too many redirects")
@@ -265,7 +276,7 @@ mod tests {
     use proptest::prelude::*;
 
     fn make_scraper(keywords: Vec<&str>) -> UniversalScraper {
-        UniversalScraper::new(keywords.into_iter().map(|s| s.to_string()).collect(), None)
+        UniversalScraper::new(keywords.into_iter().map(|s| s.to_string()).collect(), None, std::collections::HashMap::new())
     }
 
     // 10.1 Unit-тесты для extract_jobs
