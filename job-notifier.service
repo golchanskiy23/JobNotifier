@@ -4,13 +4,12 @@ After=network.target
 
 [Service]
 Type=simple
-User=bloom
-WorkingDirectory=/home/bloom/Projects/JobNotifier
-ExecStart=/home/bloom/.cargo/bin/cargo run --bin JobNotifier --release
-Restart=always
+WorkingDirectory=%h/Projects/JobNotifier
+ExecStart=%h/.cargo/bin/JobNotifier run
+Restart=on-failure
 RestartSec=10
 StandardOutput=journal
 StandardError=journal
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=default.target
