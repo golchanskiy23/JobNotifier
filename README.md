@@ -12,10 +12,26 @@
 - Дедупликация по URL — повторные уведомления не приходят
 - Трекер откликов с дедлайнами и статусами
 
-## Установка
+## Архитектура
 
-```bash
-cargo build --release
+```
+Config.toml
+    └── urls + keywords + browser_urls + companies
+            │
+            ├── browser_urls → BrowserScraper (headless Chromium)
+            └── остальные   → UniversalScraper (HTTP)
+                    │
+                    ▼
+            extract_jobs_from_html / JS
+            — ищет элементы с ключевыми словами
+            — находит ближайшую ссылку (без URL-паттернов)
+            — определяет компанию по домену
+                    │
+                    ▼
+            SQLite seen_jobs (id, title, company, url)
+                    │
+                    ▼
+            ConsoleNotifier + ApplicationTracker
 ```
 
 Для SPA-сайтов нужен Chromium:
@@ -31,12 +47,15 @@ sudo apt install chromium # Debian/Ubuntu
 
 ```toml
 [scraping]
+# список сайтов с вакансиями
 urls = [
   "https://careers.kaspersky.ru/stack/GO",
   "https://career.avito.com/vacancies/?q=&action=filter",
 ]
+# интервал автоматического скрейпинга
 interval_minutes = 1440
 timeout_secs = 10
+# ключевые слова выборки
 keywords = ["Go", "Golang"]
 user_agent = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36"
 
@@ -63,9 +82,23 @@ browser_wait_ms = 5000               # время ожидания JS-ренде
 
 ## Использование
 
+### Тесты
+
+```bash
+cargo test
+```
+
+### Обязательно перед запуском
+```bash
+touch job_notifier.db   # создать файл БД перед первым запуском
+# Docker
+docker compose up -d --build # сборка контейнера
+```
+
 ### Однократный запуск
 
 ```bash
+cargo build --release
 cargo run -- run --run-once
 # Docker:
 docker compose exec job-notifier ./JobNotifier run --run-once
@@ -76,6 +109,7 @@ docker compose exec job-notifier ./JobNotifier run --run-once
 ```bash
 cargo run -- run
 # Docker: планировщик запускается автоматически при docker compose up
+docker compose up -d --build
 ```
 
 ### История и статистика
@@ -88,7 +122,7 @@ docker compose exec job-notifier ./JobNotifier run --stats
 docker compose exec job-notifier ./JobNotifier run --recent 20
 ```
 
-## Трекер откликов
+### Трекер откликов
 
 ```bash
 # Добавить отклик
@@ -129,7 +163,7 @@ docker compose exec job-notifier ./JobNotifier delete-application --id <UUID>
 [!] Kaspersky — Developer Go (Sandbox) (deadline: 2026-04-02)
 ```
 
-## БД
+### БД
 
 Вакансии хранятся в SQLite (`job_notifier.db`). Просмотр:
 
@@ -147,12 +181,9 @@ sqlite3 job_notifier.db "DELETE FROM seen_jobs;"
 docker compose exec job-notifier sqlite3 job_notifier.db "DELETE FROM seen_jobs;"
 ```
 
-## Docker
+## Получение логов и остановка контейнера
 
 ```bash
-# Собрать и запустить планировщик в фоне
-docker compose up -d --build
-
 # Логи (Ctrl+C отсоединяет от вывода, контейнер продолжает работать)
 docker compose logs -f
 
@@ -174,32 +205,4 @@ sudo cp job-notifier.service /etc/systemd/user/
 systemctl --user daemon-reload
 systemctl --user enable --now job-notifier
 journalctl --user -u job-notifier -f
-```
-
-## Тесты
-
-```bash
-cargo test
-```
-
-## Архитектура
-
-```
-Config.toml
-    └── urls + keywords + browser_urls + companies
-            │
-            ├── browser_urls → BrowserScraper (headless Chromium)
-            └── остальные   → UniversalScraper (HTTP)
-                    │
-                    ▼
-            extract_jobs_from_html / JS
-            — ищет элементы с ключевыми словами
-            — находит ближайшую ссылку (без URL-паттернов)
-            — определяет компанию по домену
-                    │
-                    ▼
-            SQLite seen_jobs (id, title, company, url)
-                    │
-                    ▼
-            ConsoleNotifier + ApplicationTracker
 ```
