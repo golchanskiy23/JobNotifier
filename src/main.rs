@@ -209,7 +209,8 @@ async fn run_main(args: RunArgs) -> Result<()> {
     if args.run_once {
         scheduler.run_once(&cfg.scraping.urls).await?;
     } else {
-        scheduler.run_scheduler(&cfg.scraping.urls).await?;
+        let schedule_time = cfg.scraping.schedule_time.clone().unwrap_or_else(|| "11:00".to_string());
+        scheduler.run_scheduler(&cfg.scraping.urls, &schedule_time).await?;
     }
 
     Ok(())

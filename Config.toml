@@ -85,6 +85,8 @@ urls = [
 interval_minutes = 1440
 timeout_secs = 10
 keywords = ["Go", "Golang"]
+# Время ежедневного запуска планировщика в формате HH:MM (по умолчанию 11:00)
+schedule_time = "11:00"
 user_agent = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36"
 
 # SPA-сайты которые требуют headless Chromium (React/Vue/Angular)

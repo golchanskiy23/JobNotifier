@@ -4,8 +4,9 @@ After=network.target
 
 [Service]
 Type=simple
+# Укажи путь к директории проекта (где лежат Config.toml и job_notifier.db)
 WorkingDirectory=%h/Projects/JobNotifier
-ExecStart=%h/.cargo/bin/JobNotifier run
+ExecStart=%h/.local/bin/JobNotifier run
 Restart=on-failure
 RestartSec=10
 StandardOutput=journal

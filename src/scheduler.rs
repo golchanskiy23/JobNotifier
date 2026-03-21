@@ -80,11 +80,11 @@ impl JobScheduler {
         Ok(())
     }
     
-    pub async fn run_scheduler(&mut self, urls: &[String]) -> Result<()> {
+    pub async fn run_scheduler(&mut self, urls: &[String], schedule_time: &str) -> Result<()> {
         println!("Starting job scheduler...");
-        
-        let target_hour = 11;
-        let target_minute = 02;
+
+        // Парсим "HH:MM", fallback на 11:00
+        let (target_hour, target_minute) = parse_schedule_time(schedule_time);
         let initial_delay = self.compute_initial_delay(target_hour, target_minute);
         let start = Instant::now() + initial_delay;
         
@@ -196,4 +196,11 @@ impl JobScheduler {
         let diff = next_run - now;
         Duration::from_secs(diff.num_seconds().max(0) as u64)
     }
+}
+
+fn parse_schedule_time(s: &str) -> (u32, u32) {
+    let parts: Vec<&str> = s.splitn(2, ':').collect();
+    let hour = parts.first().and_then(|h| h.parse::<u32>().ok()).unwrap_or(11);
+    let minute = parts.get(1).and_then(|m| m.parse::<u32>().ok()).unwrap_or(0);
+    (hour.min(23), minute.min(59))
 }

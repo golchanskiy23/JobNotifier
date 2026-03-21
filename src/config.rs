@@ -25,6 +25,9 @@ pub struct ScrapingConfig {
     /// Время ожидания JS-рендеринга в миллисекундах (по умолчанию 3000)
     #[serde(default)]
     pub browser_wait_ms: Option<u64>,
+    /// Время ежедневного запуска в формате "HH:MM" (по умолчанию "11:00")
+    #[serde(default)]
+    pub schedule_time: Option<String>,
 }
 
 impl ScrapingConfig {
