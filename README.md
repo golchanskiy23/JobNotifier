@@ -1,6 +1,6 @@
 # JobNotifier
 
-Инструмент для мониторинга вакансий с произвольных сайтов и трекинга откликов. Написан на Rust.
+Инструмент для мониторинга вакансий с произвольных сайтов и трекинга откликов.
 
 ## Возможности
 
@@ -200,9 +200,59 @@ Chromium уже включён в образ, `chrome_path` в конфиге у
 
 ## Systemd
 
+Альтернатива Docker — запуск как пользовательский systemd-сервис (без root). Сервис стартует при входе пользователя и перезапускается при падении.
+
+### 1. Сборка бинарника
+
 ```bash
-sudo cp job-notifier.service /etc/systemd/user/
+cargo build --release
+```
+
+### 2. Установка бинарника
+
+Скопируй бинарник в удобное место. Вариант — рядом с проектом:
+
+```bash
+# Либо оставь в target/release и укажи полный путь в service-файле
+# Либо скопируй в ~/.local/bin (должен быть в PATH)
+cp target/release/JobNotifier ~/.local/bin/JobNotifier
+```
+
+### 3. Настройка service-файла
+
+Открой `job-notifier.service` и укажи путь к директории проекта в `WorkingDirectory` — там должны лежать `Config.toml` и `job_notifier.db`:
+
+### 4. Установка сервиса
+
+```bash
+mkdir -p ~/.config/systemd/user
+cp job-notifier.service ~/.config/systemd/user/
 systemctl --user daemon-reload
 systemctl --user enable --now job-notifier
-journalctl --user -u job-notifier -f
 ```
+
+### 5. Управление
+
+```bash
+systemctl --user status job-notifier      # статус
+systemctl --user stop job-notifier        # остановить
+systemctl --user restart job-notifier     # перезапустить
+systemctl --user disable job-notifier     # убрать из автозапуска
+```
+
+### 6. Логи
+
+```bash
+journalctl --user -u job-notifier -f      # следить в реальном времени
+journalctl --user -u job-notifier -n 100  # последние 100 строк
+journalctl --user -u job-notifier --since "1 hour ago"
+```
+
+### 7. Автозапуск без активной сессии
+
+По умолчанию пользовательские сервисы останавливаются при выходе из системы. Чтобы сервис работал в фоне постоянно:
+
+```bash
+loginctl enable-linger $USER
+```
+
